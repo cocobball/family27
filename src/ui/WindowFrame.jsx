@@ -32,6 +32,13 @@ export default function WindowFrame({
   const Component = moduleDef?.Component;
 
   function onHeaderPointerDown(e) {
+    // IMPORTANT: Don't start a drag when the user is pressing an interactive control (buttons, links, etc).
+    // If we capture the pointer here, the click never reaches the button (pointerup is delivered to the header).
+    const interactive = e.target?.closest?.(
+      "button, a, input, select, textarea, [role='button'], [data-no-drag]"
+    );
+    if (interactive) return;
+
     // Touch-first: pointer events
     e.currentTarget.setPointerCapture?.(e.pointerId);
     setDragging(true);
@@ -96,13 +103,13 @@ export default function WindowFrame({
         </div>
 
         <div className="flex items-center gap-2">
-          <button className="iconBtn" onClick={(e) => { e.stopPropagation(); onMinimizeWindow(win.id); }} aria-label="Minimize">
+          <button className="iconBtn" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onMinimizeWindow(win.id); }} aria-label="Minimize">
             <Minus size={18} />
           </button>
-          <button className="iconBtn" onClick={(e) => { e.stopPropagation(); onHideWindow(win.id); }} aria-label="Hide">
+          <button className="iconBtn" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onHideWindow(win.id); }} aria-label="Hide">
             <EyeOff size={18} />
           </button>
-          <button className="iconBtn" onClick={(e) => { e.stopPropagation(); onPopoutWindow(win.id); }} aria-label="Popout">
+          <button className="iconBtn" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onPopoutWindow(win.id); }} aria-label="Popout">
             <Maximize2 size={18} />
           </button>
         </div>
