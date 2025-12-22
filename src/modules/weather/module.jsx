@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { RefreshCcw, MapPin, AlertTriangle } from "lucide-react";
+import { RefreshCcw, MapPin, AlertTriangle, Settings, X } from "lucide-react";
 import {
   clamp,
   describeWeatherCode,
@@ -130,6 +130,8 @@ export default function WeatherModule({ ctx }) {
   const fresh = isCacheFresh(cache?.fetchedAt, prefs.cacheMinutes);
 
   const [zipInput, setZipInput] = useState(location.zip);
+
+  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
     setZipInput(location.zip);
@@ -267,8 +269,6 @@ export default function WeatherModule({ ctx }) {
             <MapPin className="w-4 h-4 opacity-80" />
             <span>Weather</span>
           </div>
-          <div className="text-xs opacity-75">{location.label}</div>
-          <div className="text-xs opacity-60">Updated: {formatUpdated(cache?.fetchedAt)} {fresh ? "• cached" : ""}</div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -278,6 +278,14 @@ export default function WeatherModule({ ctx }) {
             title="Refresh"
           >
             <RefreshCcw className={"w-4 h-4 " + (status.state === "loading" ? "animate-spin" : "")} />
+          </button>
+          <button
+            onClick={() => setShowSettings(true)}
+            className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all"
+            title="Settings"
+            type="button"
+          >
+            <Settings className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -289,60 +297,7 @@ export default function WeatherModule({ ctx }) {
         </div>
       ) : null}
 
-      <div className={cardClass()}>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div>
-            <div className="text-sm opacity-70">ZIP code</div>
-            <div className="mt-1 flex items-center gap-2">
-              <input
-                value={zipInput}
-                onChange={(e) => setZipInput(e.target.value)}
-                className="w-[110px] px-3 py-2 rounded-xl bg-white/10 border border-white/15 outline-none"
-                inputMode="numeric"
-                pattern="\\d{5}"
-              />
-              <button
-                onClick={setZip}
-                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all text-sm"
-                title="Set ZIP"
-              >
-                Set
-              </button>
-              <button
-                onClick={() => {
-                  setZipInput("76063");
-                  // reset to requested default
-                  persist({
-                    ...db,
-                    location: {
-                      zip: "76063",
-                      label: "76063",
-                      lat: 32.56913,
-                      lon: -97.14376,
-                      timezone: "America/Chicago",
-                    },
-                    cache: { fetchedAt: null, data: null },
-                  });
-                  doRefresh({ force: true });
-                }}
-                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 transition-all text-xs"
-                title="Reset to 76063"
-              >
-                Reset
-              </button>
-            </div>
-            <div className="mt-2 text-xs opacity-60">
-              Default is <span className="opacity-90">76063</span>. (You can change it anytime.)
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 text-xs opacity-70">
-            <span className={pillClass(true)}>°F</span>
-            <span className={pillClass(false)}>mph</span>
-            <span className={pillClass(false)}>in</span>
-          </div>
-        </div>
-      </div>
+      {/* Settings moved to modal for cleaner dashboard */}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className={cardClass()}>
@@ -434,7 +389,7 @@ export default function WeatherModule({ ctx }) {
       <div className={cardClass()}>
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-sm opacity-70">7-day forecast</div>
+            <div className="text-sm opacity-70">5-day forecast</div>
             <div className="text-xs opacity-60">High / Low • precip chance • total precip</div>
           </div>
           <div className="text-xs opacity-60">
@@ -463,9 +418,9 @@ export default function WeatherModule({ ctx }) {
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-5 gap-2">
           {nextDays.length ? (
-            nextDays.slice(0, 7).map((d) => {
+            nextDays.slice(0, 5).map((d) => {
               const desc = describeWeatherCode(d.code);
               return (
                 <div key={d.key} className="bg-white/5 rounded-2xl p-4 border border-white/10">
@@ -491,6 +446,75 @@ export default function WeatherModule({ ctx }) {
       <div className="text-xs opacity-60">
         Data source: Open‑Meteo forecast API (no key). ZIP lookup: Zippopotam.us.
       </div>
+      {showSettings && (
+        <div className="absolute inset-0 z-30 p-3" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div className="h-full w-full glass rounded-[1.75rem] overflow-hidden flex flex-col">
+            <div className="h-14 px-4 flex items-center justify-between border-b hairline">
+              <div className="font-semibold">Weather settings</div>
+              <button className="iconBtn" onClick={() => setShowSettings(false)} aria-label="Close" type="button">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              <div className="space-y-4">
+                <div>
+                  <div className="text-sm opacity-70">ZIP code</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <input
+                      value={zipInput}
+                      onChange={(e) => setZipInput(e.target.value)}
+                      className="w-[110px] px-3 py-2 rounded-xl bg-white/10 border border-white/15 outline-none"
+                      inputMode="numeric"
+                      pattern="\\d{5}"
+                    />
+                    <button
+                      onClick={setZip}
+                      className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all text-sm"
+                      title="Set ZIP"
+                    >
+                      Set
+                    </button>
+                    <button
+                      onClick={() => {
+                        setZipInput("76063");
+                        // reset to requested default
+                        persist({
+                          ...db,
+                          location: {
+                            zip: "76063",
+                            label: "76063",
+                            lat: 32.56913,
+                            lon: -97.14376,
+                            timezone: "America/Chicago",
+                          },
+                          cache: { fetchedAt: null, data: null },
+                        });
+                        doRefresh({ force: true });
+                      }}
+                      className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 transition-all text-xs"
+                      title="Reset to 76063"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <div className="mt-2 text-xs opacity-60">
+                    Default is <span className="opacity-90">76063</span>. (You can change it anytime.)
+                  </div>
+                </div>
+
+                <div className="pt-2">
+                  <div className="text-xs opacity-70">Units (display)</div>
+                  <div className="mt-2 flex items-center gap-2 text-xs opacity-70">
+                    <span className={pillClass(true)}>°F</span>
+                    <span className={pillClass(false)}>mph</span>
+                    <span className={pillClass(false)}>in</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
