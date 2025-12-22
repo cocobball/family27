@@ -61,6 +61,43 @@ function getChoresForDateWithDoneLocal(choresData, dateOrStr) {
   return (choresData.chores || []).filter((c) => c.day === dayName).map((c) => ({ ...c, done: !!doneMap[c.id] }));
 }
 
+// XML helpers (module-local)
+function escapeXml(text) {
+  if (text == null) return "";
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function safeDownloadText(filename, text) {
+  const blob = new Blob([text], { type: "application/xml" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function xmlText(node, tag) {
+  const el = node.getElementsByTagName(tag)[0];
+  if (!el) return null;
+  return el.textContent == null ? null : el.textContent.trim();
+}
+
+function parseBool(str, fallback = false) {
+  if (str == null) return fallback;
+  const s = String(str).trim().toLowerCase();
+  if (s === "true" || s === "1") return true;
+  if (s === "false" || s === "0") return false;
+  return fallback;
+}
+
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
 
@@ -641,6 +678,131 @@ export default function CalendarModule({ ctx }) {
     [events, patch]
   );
 
+  // File import/export refs & handlers
+  const fileInputRef = useRef(null);
+
+  const handleImportClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleFileChange = useCallback(async (e) => {
+    const f = e?.target?.files?.[0];
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const doc = new DOMParser().parseFromString(text, "application/xml");
+      if (doc.getElementsByTagName("parsererror").length) {
+        window.alert("Import failed: invalid XML.");
+        fileInputRef.current.value = null;
+        return;
+      }
+
+      const nodes = doc.getElementsByTagName("event");
+      const imported = [];
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        const title = xmlText(node, "title") || "";
+        const calendarId = xmlText(node, "calendarId") || "family";
+        const allDay = parseBool(xmlText(node, "allDay"), false);
+        const startDate = xmlText(node, "startDate") || todayStr();
+        const endDate = xmlText(node, "endDate") || startDate;
+        let startTime = xmlText(node, "startTime");
+        let endTime = xmlText(node, "endTime");
+        if (allDay) {
+          startTime = null;
+          endTime = null;
+        } else {
+          startTime = startTime || "09:00";
+          endTime = endTime || "10:00";
+        }
+        const important = parseBool(xmlText(node, "important"), false);
+        const location = xmlText(node, "location") || "";
+        const notes = xmlText(node, "notes") || "";
+        const createdAt = xmlText(node, "createdAt") || new Date().toISOString();
+        const updatedAt = xmlText(node, "updatedAt") || new Date().toISOString();
+
+        // recurrence
+        const recEl = node.getElementsByTagName("recurrence")[0];
+        let recurrence = null;
+        if (recEl) {
+          const freq = xmlText(recEl, "freq");
+          const interval = parseInt(xmlText(recEl, "interval") || "1", 10) || 1;
+          const until = xmlText(recEl, "until") || null;
+          const byWeekdayStr = xmlText(recEl, "byWeekday");
+          const byWeekday = byWeekdayStr
+            ? byWeekdayStr.split(",").map((n) => Number(n)).filter((x) => !Number.isNaN(x))
+            : null;
+          recurrence = { freq: freq || "WEEKLY", interval, ...(until ? { until } : {}), ...(byWeekday ? { byWeekday } : {}) };
+        }
+
+        const ev = normalizeEvent({
+          id: uid("ev"), // always generate new id
+          title,
+          calendarId,
+          allDay,
+          startDate,
+          endDate,
+          startTime,
+          endTime,
+          important,
+          location,
+          notes,
+          createdAt,
+          updatedAt,
+          recurrence: recurrence || null,
+        });
+
+        imported.push(ev);
+      }
+
+      if (imported.length) {
+        patch({ events: [...events, ...imported] });
+        window.alert(`Imported ${imported.length} event(s).`);
+      } else {
+        window.alert("No events found to import.");
+      }
+    } catch (err) {
+      console.error(err);
+      window.alert("Import failed: " + (err && err.message ? err.message : "unknown error"));
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = null;
+    }
+  }, [events, patch]);
+
+  const handleExport = useCallback(() => {
+    const rows = [];
+    rows.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<events>");
+    for (const ev of events) {
+      rows.push("  <event>");
+      rows.push(`    <id>${escapeXml(ev.id)}</id>`);
+      rows.push(`    <title>${escapeXml(ev.title)}</title>`);
+      rows.push(`    <calendarId>${escapeXml(ev.calendarId)}</calendarId>`);
+      rows.push(`    <allDay>${ev.allDay ? "true" : "false"}</allDay>`);
+      rows.push(`    <startDate>${escapeXml(ev.startDate)}</startDate>`);
+      rows.push(`    <endDate>${escapeXml(ev.endDate ?? ev.startDate)}</endDate>`);
+      rows.push(`    <startTime>${escapeXml(ev.startTime ?? "")}</startTime>`);
+      rows.push(`    <endTime>${escapeXml(ev.endTime ?? "")}</endTime>`);
+      rows.push(`    <important>${ev.important ? "true" : "false"}</important>`);
+      rows.push(`    <location>${escapeXml(ev.location ?? "")}</location>`);
+      rows.push(`    <notes>${escapeXml(ev.notes ?? "")}</notes>`);
+      rows.push(`    <createdAt>${escapeXml(ev.createdAt ?? "")}</createdAt>`);
+      rows.push(`    <updatedAt>${escapeXml(ev.updatedAt ?? "")}</updatedAt>`);
+      if (ev.recurrence) {
+        rows.push("    <recurrence>");
+        rows.push(`      <freq>${escapeXml(ev.recurrence.freq ?? "")}</freq>`);
+        rows.push(`      <interval>${String(ev.recurrence.interval ?? 1)}</interval>`);
+        rows.push(`      <until>${escapeXml(ev.recurrence.until ?? "")}</until>`);
+        const bw = Array.isArray(ev.recurrence.byWeekday) ? ev.recurrence.byWeekday.join(",") : "";
+        rows.push(`      <byWeekday>${escapeXml(bw)}</byWeekday>`);
+        rows.push("    </recurrence>");
+      }
+      rows.push("  </event>");
+    }
+    rows.push("</events>");
+    const xml = rows.join("\n");
+    safeDownloadText("family-calendar-events.xml", xml);
+  }, [events]);
+
   const dayHeader = useMemo(() => dayLabel(sel), [sel]);
   const dowLabels = useMemo(() => getDowLabels(prefs.weekStart ?? 0), [prefs.weekStart]);
   const view = prefs.view ?? "month";
@@ -674,6 +836,12 @@ export default function CalendarModule({ ctx }) {
           <IconPill active={view === "agenda"} onClick={() => setView("agenda")} icon={List} label="Agenda" />
           <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={() => openAdd(sel)} type="button">
             <Plus size={16} /> Add
+          </button>
+          <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={handleImportClick} type="button">
+            Import XML
+          </button>
+          <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={handleExport} type="button">
+            Export XML
           </button>
         </div>
 
@@ -923,6 +1091,15 @@ export default function CalendarModule({ ctx }) {
   return (
     <div ref={rootRef} className="h-full relative flex flex-col gap-3">
       {main}
+
+      {/* hidden file input for XML import */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".xml,text/xml,application/xml"
+        style={{ display: "none" }}
+        onChange={handleFileChange}
+      />
 
       {editor && (
         <EventEditor
