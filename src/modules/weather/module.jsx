@@ -131,7 +131,7 @@ export default function WeatherModule({ ctx }) {
 
   const [zipInput, setZipInput] = useState(location.zip);
 
-  const [showSettings, setShowSettings] = useState(false);
+  // Removed in-body settings modal/state; settings are now only in the global modal
 
   useEffect(() => {
     setZipInput(location.zip);
@@ -261,6 +261,7 @@ export default function WeatherModule({ ctx }) {
     return out;
   }, [daily]);
 
+
   return (
     <div className="relative overflow-hidden rounded-[1.75rem]">
       <div
@@ -282,32 +283,6 @@ export default function WeatherModule({ ctx }) {
         }}
       />
       <div className="relative z-10 space-y-4 p-1">
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="text-lg font-semibold flex items-center gap-2">
-            <MapPin className="w-4 h-4 opacity-80" />
-            <span>Weather</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => doRefresh({ force: true })}
-            className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all"
-            title="Refresh"
-          >
-            <RefreshCcw className={"w-4 h-4 " + (status.state === "loading" ? "animate-spin" : "")} />
-          </button>
-          <button
-            onClick={() => setShowSettings(true)}
-            className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all"
-            title="Settings"
-            type="button"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
 
       {status.state === "error" ? (
         <div className="flex items-start gap-2 text-sm rounded-2xl border border-red-400/30 bg-red-500/10 p-3">
@@ -465,75 +440,7 @@ export default function WeatherModule({ ctx }) {
       <div className="text-xs opacity-60">
         Data source: Open‑Meteo forecast API (no key). ZIP lookup: Zippopotam.us.
       </div>
-      {showSettings && (
-        <div className="absolute inset-0 z-30 p-3" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div className="h-full w-full glass rounded-[1.75rem] overflow-hidden flex flex-col">
-            <div className="h-14 px-4 flex items-center justify-between border-b hairline">
-              <div className="font-semibold">Weather settings</div>
-              <button className="iconBtn" onClick={() => setShowSettings(false)} aria-label="Close" type="button">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="flex-1 overflow-auto p-4">
-              <div className="space-y-4">
-                <div>
-                  <div className="text-sm opacity-70">ZIP code</div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <input
-                      value={zipInput}
-                      onChange={(e) => setZipInput(e.target.value)}
-                      className="w-[110px] px-3 py-2 rounded-xl bg-white/10 border border-white/15 outline-none"
-                      inputMode="numeric"
-                      pattern="\\d{5}"
-                    />
-                    <button
-                      onClick={setZip}
-                      className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 transition-all text-sm"
-                      title="Set ZIP"
-                    >
-                      Set
-                    </button>
-                    <button
-                      onClick={() => {
-                        setZipInput("76063");
-                        // reset to requested default
-                        persist({
-                          ...db,
-                          location: {
-                            zip: "76063",
-                            label: "76063",
-                            lat: 32.56913,
-                            lon: -97.14376,
-                            timezone: "America/Chicago",
-                          },
-                          cache: { fetchedAt: null, data: null },
-                        });
-                        doRefresh({ force: true });
-                      }}
-                      className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 transition-all text-xs"
-                      title="Reset to 76063"
-                    >
-                      Reset
-                    </button>
-                  </div>
-                  <div className="mt-2 text-xs opacity-60">
-                    Default is <span className="opacity-90">76063</span>. (You can change it anytime.)
-                  </div>
-                </div>
-
-                <div className="pt-2">
-                  <div className="text-xs opacity-70">Units (display)</div>
-                  <div className="mt-2 flex items-center gap-2 text-xs opacity-70">
-                    <span className={pillClass(true)}>°F</span>
-                    <span className={pillClass(false)}>mph</span>
-                    <span className={pillClass(false)}>in</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* All settings UI is now in the global modal via SettingsComponent */}
       </div>
     </div>
   );
