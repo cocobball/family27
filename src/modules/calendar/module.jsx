@@ -551,6 +551,7 @@ export default function CalendarModule({ ctx }) {
   // UI settings stored IN module data (so we never overwrite the store)
   const showChores = data.ui?.showChores ?? true;
   const showImportant = data.ui?.showImportant ?? true;
+  const showMeals = data.ui?.showMeals ?? false;
   const choresView = data.ui?.choresView ?? "day"; // "day" | "week" | "month"
 
   // Editor modal state
@@ -850,6 +851,15 @@ export default function CalendarModule({ ctx }) {
             Show important
           </label>
 
+          <label className="flex items-center gap-2 text-sm opacity-90 select-none">
+            <input
+              type="checkbox"
+              checked={!!showMeals}
+              onChange={(e) => patch({ ui: { ...(data.ui || {}), showMeals: e.target.checked } })}
+            />
+            Show meals
+          </label>
+
           <div className="pt-2 space-y-2">
             <div className="text-xs opacity-70">Chores view</div>
             <div className="flex flex-wrap gap-2">
@@ -1038,18 +1048,68 @@ export default function CalendarModule({ ctx }) {
               ) : null;
             })()}
 
-          {/* Chores area */}
-          {showChores &&
-            (() => {
-              const sharedNow = ctx.sharedState.get?.() || {};
-              const choresData = sharedNow.choresData || null;
-
-              if (choresView === "day") {
-                return choresForSelectedDate.length ? (
-                  <div className="mt-4 space-y-2">
+          {/* Chores and Meals area (day view) */}
+          {choresView === "day" && (showChores || showMeals) && (() => {
+            // Get meals data directly from localStorage (not sharedState)
+            let mealsData = null;
+            try {
+              const raw = localStorage.getItem("family_dashboard_db_v1");
+              if (raw) {
+                const db = JSON.parse(raw);
+                mealsData = db?.modules?.meals || null;
+              }
+            } catch {}
+            // Chores
+            const chores = showChores ? choresForSelectedDate : [];
+            // Meals
+            let meals = [];
+            if (showMeals && mealsData && mealsData.planner && mealsData.planner.weeks) {
+              // Find the week key and day name
+              const weekStartsOnMonday = mealsData.settings?.weekStartsOnMonday ?? true;
+              const getWeekKey = (dateStr) => {
+                const d = new Date(dateStr + "T12:00:00");
+                d.setHours(0, 0, 0, 0);
+                let day = d.getDay();
+                if (weekStartsOnMonday) {
+                  day = (day + 6) % 7;
+                }
+                d.setDate(d.getDate() - day);
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, "0");
+                const dd = String(d.getDate()).padStart(2, "0");
+                return `${y}-${m}-${dd}`;
+              };
+              const weekKey = getWeekKey(sel);
+              const dayName = (() => {
+                const d = new Date(sel + "T12:00:00");
+                return ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"][(d.getDay() + 6) % 7];
+              })();
+              const dayObj = mealsData.planner.weeks?.[weekKey]?.days?.[dayName] || {};
+              // SLOTS: breakfast, lunch, dinner
+              const slotLabels = { breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner" };
+              meals = Object.entries(slotLabels)
+                .map(([slot, label]) => {
+                  const entry = dayObj[slot];
+                  if (!entry) return null;
+                  if (entry.type === "recipe" && entry.id && Array.isArray(mealsData.recipes)) {
+                    const recipe = mealsData.recipes.find((r) => r.id === entry.id);
+                    return recipe ? { name: recipe.name, notes: recipe.notes, slot: label } : null;
+                  }
+                  if (entry.type === "text" && entry.text) {
+                    return { name: entry.text, slot: label };
+                  }
+                  return null;
+                })
+                .filter(Boolean);
+            }
+            if (!chores.length && !meals.length) return null;
+            return (
+              <div className="mt-4 space-y-2">
+                {chores.length > 0 && (
+                  <>
                     <div className="text-sm opacity-80">Chores</div>
                     <div className="space-y-2">
-                      {choresForSelectedDate.map((c) => (
+                      {chores.map((c) => (
                         <div
                           key={c.id}
                           className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
@@ -1061,66 +1121,227 @@ export default function CalendarModule({ ctx }) {
                         </div>
                       ))}
                     </div>
-                  </div>
-                ) : null;
-              }
+                  </>
+                )}
+                {meals.length > 0 && (
+                  <>
+                    <div className="text-sm opacity-80">Meals</div>
+                    <div className="space-y-2">
+                      {meals.map((m, i) => (
+                        <div key={i} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                          <div className="font-medium">{m.slot ? `${m.slot}: ` : ""}{m.name || "(Meal)"}</div>
+                          {m.notes && <div className="text-xs opacity-60">{m.notes}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
-              // week or month: build grouped list
-              const days = [];
-              if (choresView === "week") {
-                // compute week start from sel and prefs.weekStart
-                const dt = new Date(sel + "T12:00:00");
-                const ws = prefs.weekStart ?? 0;
-                const dow = dt.getDay();
-                const delta = (dow - ws + 7) % 7;
-                dt.setDate(dt.getDate() - delta);
-                for (let i = 0; i < 7; i++) days.push(addDaysStr(dt.toISOString().slice(0, 10), i));
-              } else {
-                // month: use rangeStart..rangeEnd
-                if (rangeStart && rangeEnd) {
-                  let cur = rangeStart;
-                  while (cur <= rangeEnd) {
-                    days.push(cur);
-                    cur = addDaysStr(cur, 1);
-                  }
+          {/* Chores area (week/month view) */}
+          {choresView !== "day" && showChores && (() => {
+            const sharedNow = ctx.sharedState.get?.() || {};
+            const choresData = sharedNow.choresData || null;
+            // week or month: build grouped list
+            const days = [];
+            if (choresView === "week") {
+              // compute week start from sel and prefs.weekStart
+              const dt = new Date(sel + "T12:00:00");
+              const ws = prefs.weekStart ?? 0;
+              const dow = dt.getDay();
+              const delta = (dow - ws + 7) % 7;
+              dt.setDate(dt.getDate() - delta);
+              for (let i = 0; i < 7; i++) days.push(addDaysStr(dt.toISOString().slice(0, 10), i));
+            } else {
+              // month: use rangeStart..rangeEnd
+              if (rangeStart && rangeEnd) {
+                let cur = rangeStart;
+                while (cur <= rangeEnd) {
+                  days.push(cur);
+                  cur = addDaysStr(cur, 1);
                 }
               }
+            }
 
-              const grouped = {};
-              for (const d of days) {
-                const list = choresData ? getChoresForDateWithDoneLocal(choresData, d) : [];
-                if (list && list.length) grouped[d] = list;
-              }
+            const grouped = {};
+            for (const d of days) {
+              const list = choresData ? getChoresForDateWithDoneLocal(choresData, d) : [];
+              if (list && list.length) grouped[d] = list;
+            }
 
-              const keys = Object.keys(grouped);
-              if (!keys.length) return null;
+            const keys = Object.keys(grouped);
+            if (!keys.length) return null;
 
-              return (
-                <div className="mt-4 space-y-2">
-                  <div className="text-sm opacity-80">Chores</div>
-                  <div className="space-y-2">
-                    {keys.map((d) => (
-                      <div key={d} className="space-y-1">
-                        <div className="text-xs opacity-70">{dayLabel(d)}</div>
-                        <div className="space-y-1">
-                          {grouped[d].map((c) => (
-                            <div
-                              key={c.id}
-                              className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
-                            >
-                              <div className={c.done ? "line-through opacity-70" : ""}>
-                                <span className="opacity-80">{c.person}:</span> {c.name}
-                              </div>
-                              <div className="text-xs opacity-70">{c.done ? "done" : ""}</div>
+            return (
+              <div className="mt-4 space-y-2">
+                <div className="text-sm opacity-80">Chores</div>
+                <div className="space-y-2">
+                  {keys.map((d) => (
+                    <div key={d} className="space-y-1">
+                      <div className="text-xs opacity-70">{dayLabel(d)}</div>
+                      <div className="space-y-1">
+                        {grouped[d].map((c) => (
+                          <div
+                            key={c.id}
+                            className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
+                          >
+                            <div className={c.done ? "line-through opacity-70" : ""}>
+                              <span className="opacity-80">{c.person}:</span> {c.name}
                             </div>
-                          ))}
-                        </div>
+                            <div className="text-xs opacity-70">{c.done ? "done" : ""}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Meals area (week/month view) */}
+          {choresView !== "day" && showMeals && (() => {
+            const sharedNow = ctx.sharedState.get?.() || {};
+            const mealsData = sharedNow.mealsData || null;
+            if (!mealsData) return null;
+            const days = [];
+            if (choresView === "week") {
+              const dt = new Date(sel + "T12:00:00");
+              const ws = prefs.weekStart ?? 0;
+              const dow = dt.getDay();
+              const delta = (dow - ws + 7) % 7;
+              dt.setDate(dt.getDate() - delta);
+              for (let i = 0; i < 7; i++) days.push(addDaysStr(dt.toISOString().slice(0, 10), i));
+            } else {
+              if (rangeStart && rangeEnd) {
+                let cur = rangeStart;
+                while (cur <= rangeEnd) {
+                  days.push(cur);
+                  cur = addDaysStr(cur, 1);
+                }
+              }
+            }
+            // Helper to get meals for a date string
+            function getMealsForDate(dateStr) {
+              if (!mealsData.days) return [];
+              const day = mealsData.days.find((d) => d.date === dateStr);
+              if (!day || !Array.isArray(day.meals)) return [];
+              return day.meals;
+            }
+            const grouped = {};
+            for (const d of days) {
+              const meals = getMealsForDate(d);
+              if (meals && meals.length) grouped[d] = meals;
+            }
+            const keys = Object.keys(grouped);
+            if (!keys.length) return null;
+            return (
+              <div className="mt-4 space-y-2">
+                <div className="text-sm opacity-80">Meals</div>
+                <div className="space-y-2">
+                  {keys.map((d) => (
+                    <div key={d} className="space-y-1">
+                      <div className="text-xs opacity-70">{dayLabel(d)}</div>
+                      <div className="space-y-1">
+                        {grouped[d].map((m, i) => (
+                          <div key={i} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                            <div className="font-medium">{m.name || "(Meal)"}</div>
+                            {m.time && <div className="text-xs opacity-70">{m.time}</div>}
+                            {m.notes && <div className="text-xs opacity-60">{m.notes}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Meals area */}
+          {showMeals && (() => {
+            const sharedNow = ctx.sharedState.get?.() || {};
+            const mealsData = sharedNow.mealsData || null;
+            if (!mealsData) return null;
+
+            // Helper to get meals for a date string
+            function getMealsForDate(dateStr) {
+              if (!mealsData.days) return [];
+              const day = mealsData.days.find((d) => d.date === dateStr);
+              if (!day || !Array.isArray(day.meals)) return [];
+              return day.meals;
+            }
+
+            // For day view, show meals for selected day
+            if (choresView === "day") {
+              const meals = getMealsForDate(sel);
+              return meals.length ? (
+                <div className="mt-4 space-y-2">
+                  <div className="text-sm opacity-80">Meals</div>
+                  <div className="space-y-2">
+                    {meals.map((m, i) => (
+                      <div key={i} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                        <div className="font-medium">{m.name || "(Meal)"}</div>
+                        {m.time && <div className="text-xs opacity-70">{m.time}</div>}
+                        {m.notes && <div className="text-xs opacity-60">{m.notes}</div>}
                       </div>
                     ))}
                   </div>
                 </div>
-              );
-            })()}
+              ) : null;
+            }
+
+            // For week/month, group by day
+            const days = [];
+            if (choresView === "week") {
+              const dt = new Date(sel + "T12:00:00");
+              const ws = prefs.weekStart ?? 0;
+              const dow = dt.getDay();
+              const delta = (dow - ws + 7) % 7;
+              dt.setDate(dt.getDate() - delta);
+              for (let i = 0; i < 7; i++) days.push(addDaysStr(dt.toISOString().slice(0, 10), i));
+            } else {
+              if (rangeStart && rangeEnd) {
+                let cur = rangeStart;
+                while (cur <= rangeEnd) {
+                  days.push(cur);
+                  cur = addDaysStr(cur, 1);
+                }
+              }
+            }
+
+            const grouped = {};
+            for (const d of days) {
+              const meals = getMealsForDate(d);
+              if (meals && meals.length) grouped[d] = meals;
+            }
+            const keys = Object.keys(grouped);
+            if (!keys.length) return null;
+
+            return (
+              <div className="mt-4 space-y-2">
+                <div className="text-sm opacity-80">Meals</div>
+                <div className="space-y-2">
+                  {keys.map((d) => (
+                    <div key={d} className="space-y-1">
+                      <div className="text-xs opacity-70">{dayLabel(d)}</div>
+                      <div className="space-y-1">
+                        {grouped[d].map((m, i) => (
+                          <div key={i} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                            <div className="font-medium">{m.name || "(Meal)"}</div>
+                            {m.time && <div className="text-xs opacity-70">{m.time}</div>}
+                            {m.notes && <div className="text-xs opacity-60">{m.notes}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="flex-1 overflow-auto space-y-2 mt-3">
