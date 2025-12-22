@@ -104,8 +104,35 @@ export default function App() {
       }
 
       w.column = targetColumn;
+      // Span is only supported from the LEFT column (left+middle).
+      if ((w.span ?? 1) > 1 && targetColumn !== "left") {
+        w.span = 1;
+      }
     });
   }, [mutateDb]);
+
+  const onToggleSpan = useCallback((windowId) => {
+    mutateDb((d) => {
+      const w = d.layout.windows?.[windowId];
+      if (!w) return;
+
+      const cur = w.span ?? 1;
+      if (cur > 1) {
+        w.span = 1;
+        return;
+      }
+
+      // Only allow spanning from the LEFT column (left + middle).
+      const col = w.column ?? "middle";
+      if (col !== "left") return;
+
+      w.span = 2;
+
+      // Give wide windows a bit more vertical room if they're still tiny.
+      if ((w.h ?? 0.35) < 0.5) w.h = 0.6;
+    });
+  }, [mutateDb]);
+
 
   const onResizeWindow = useCallback((windowId, nextH) => {
     mutateDb((d) => {
@@ -267,6 +294,7 @@ export default function App() {
           onMinimizeWindow={onMinimizeWindow}
           onHideWindow={onHideWindow}
           onPopoutWindow={onPopoutWindow}
+          onToggleSpan={onToggleSpan}
         />
 
         {popupWin && popupDef && popupCtx && (
@@ -321,6 +349,18 @@ function bootstrapDb(db, moduleList) {
   db.layout.windows ??= {};
   db.layout.moduleVisibility ??= {};
   db.modules ??= {};
+
+  // ---- Window schema migration (v1.4) ----
+  // Ensure newly introduced fields exist without clobbering user choices.
+  const calWin = Object.values(db.layout.windows).find((w) => w?.moduleId === "calendar");
+  if (calWin && calWin.span == null) {
+    calWin.span = 2;
+    // If the calendar is still at the old default height, give it more room by default.
+    if ((calWin.h ?? 0.35) <= 0.36) calWin.h = 0.7;
+  }
+  for (const w of Object.values(db.layout.windows)) {
+    if (w.span == null) w.span = 1;
+  }
 
   // Ensure visibility + modules keys exist for discovered modules (default OFF)
   for (const m of moduleList) {

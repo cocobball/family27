@@ -11,6 +11,7 @@ export default function Column({
   onMinimizeWindow,
   onHideWindow,
   onPopoutWindow,
+  onToggleSpan,
   onClosePopup,
   activePopup,
   columnHeightPx,
@@ -28,6 +29,7 @@ export default function Column({
           onMinimizeWindow={onMinimizeWindow}
           onHideWindow={onHideWindow}
           onPopoutWindow={onPopoutWindow}
+          onToggleSpan={onToggleSpan}
           columnHeightPx={columnHeightPx}
           isPopup={activePopup?.id === win.id}
           onClosePopup={onClosePopup}

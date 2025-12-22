@@ -1,5 +1,5 @@
 import React, { Suspense, useMemo, useRef, useState } from "react";
-import { Minus, EyeOff, Maximize2 } from "lucide-react";
+import { Minus, EyeOff, Maximize2, Columns2 } from "lucide-react";
 
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
@@ -14,6 +14,7 @@ export default function WindowFrame({
   onMinimizeWindow,
   onHideWindow,
   onPopoutWindow,
+  onToggleSpan,
   columnHeightPx,
 }) {
   const [dragging, setDragging] = useState(false);
@@ -109,6 +110,21 @@ export default function WindowFrame({
           <button className="iconBtn" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onHideWindow(win.id); }} aria-label="Hide">
             <EyeOff size={18} />
           </button>
+          {onToggleSpan && (win.column ?? "middle") === "left" && (
+            <button
+              className="iconBtn"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSpan(win.id);
+              }}
+              aria-label={(win.span ?? 1) > 1 ? "Unstretch" : "Stretch across 2 columns"}
+              title={(win.span ?? 1) > 1 ? "Use 1 column" : "Use 2 columns"}
+            >
+              <Columns2 size={18} />
+            </button>
+          )}
+
           <button className="iconBtn" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onPopoutWindow(win.id); }} aria-label="Popout">
             <Maximize2 size={18} />
           </button>
