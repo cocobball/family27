@@ -208,7 +208,8 @@ function EventChip({ occ, prefs, onClick }) {
   const time = occ.allDay ? "All day" : formatTime(occ.startTime, prefs.timeFormat);
   return (
     <button
-      className="w-full text-left rounded-xl px-2 py-1 bg-white/5 border border-white/10 active:translate-y-[1px]"
+      className="w-full text-left rounded-xl px-2 py-1 active:translate-y-[1px]"
+      style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}
       onClick={onClick}
       title={occ.title}
       type="button"
@@ -226,10 +227,10 @@ function DayCell({ dateStr, inMonth, isToday, isSelected, occs, prefs, onSelect,
   return (
     <div
       className={
-        "relative rounded-2xl border border-white/10 p-2 flex flex-col gap-1 overflow-hidden " +
-        (isSelected ? "bg-white/10" : "bg-white/5") +
+        "relative rounded-2xl border p-2 flex flex-col gap-1 overflow-hidden" +
         (inMonth ? "" : " opacity-60")
       }
+      style={{ borderColor: "var(--cal-border)", background: isSelected ? "var(--cal-panel2)" : "var(--cal-panel)" }}
       onClick={() => onSelect(dateStr)}
       role="button"
       tabIndex={0}
@@ -596,6 +597,7 @@ export default function CalendarModule({ ctx }) {
   const showImportant = data.ui?.showImportant ?? true;
   const showMeals = data.ui?.showMeals ?? false;
   const choresView = data.ui?.choresView ?? "day"; // "day" | "week" | "month"
+  const palette = data.ui?.calendarPalette ?? "default";
 
   // Editor modal state
   const [editor, setEditor] = useState(null);
@@ -723,11 +725,52 @@ export default function CalendarModule({ ctx }) {
   const dowLabels = useMemo(() => getDowLabels(prefs.weekStart ?? 0), [prefs.weekStart]);
   const view = prefs.view ?? "month";
 
+  const themeVars = useMemo(() => {
+    const themes = {
+      default: {
+        '--cal-panel': 'rgba(255, 255, 255, 0.05)',
+        '--cal-panel2': 'rgba(255, 255, 255, 0.08)',
+        '--cal-border': 'rgba(255, 255, 255, 0.15)',
+        '--cal-text': 'inherit',
+        '--cal-muted': 'rgba(255, 255, 255, 0.7)',
+      },
+      light: {
+        '--cal-panel': 'rgba(255, 255, 255, 0.85)',
+        '--cal-panel2': 'rgba(255, 255, 255, 0.95)',
+        '--cal-border': 'rgba(0, 0, 0, 0.12)',
+        '--cal-text': 'rgba(0, 0, 0, 0.87)',
+        '--cal-muted': 'rgba(0, 0, 0, 0.6)',
+      },
+      frost: {
+        '--cal-panel': 'rgba(200, 220, 255, 0.12)',
+        '--cal-panel2': 'rgba(200, 220, 255, 0.18)',
+        '--cal-border': 'rgba(200, 220, 255, 0.25)',
+        '--cal-text': 'rgba(220, 240, 255, 0.95)',
+        '--cal-muted': 'rgba(200, 220, 255, 0.7)',
+      },
+      midnight: {
+        '--cal-panel': 'rgba(0, 0, 0, 0.4)',
+        '--cal-panel2': 'rgba(0, 0, 0, 0.5)',
+        '--cal-border': 'rgba(100, 100, 150, 0.3)',
+        '--cal-text': 'rgba(200, 200, 220, 0.95)',
+        '--cal-muted': 'rgba(150, 150, 170, 0.7)',
+      },
+      contrast: {
+        '--cal-panel': 'rgba(0, 0, 0, 0.9)',
+        '--cal-panel2': 'rgba(255, 255, 255, 0.95)',
+        '--cal-border': 'rgba(255, 255, 0, 0.5)',
+        '--cal-text': 'rgba(255, 255, 255, 1)',
+        '--cal-muted': 'rgba(255, 255, 100, 0.85)',
+      },
+    };
+    return themes[palette] || themes.default;
+  }, [palette]);
+
 
 
   const main = (
     <div className={"flex-1 overflow-hidden flex " + (isWide ? "flex-row gap-3" : "flex-col gap-3")}>
-      <div className="flex-1 overflow-hidden glass rounded-2xl p-3 flex flex-col">
+      <div className="flex-1 overflow-hidden glass rounded-2xl p-3 flex flex-col" style={{ background: "var(--cal-panel2)", border: "1px solid var(--cal-border)" }}>
         {/* Month header */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
@@ -823,7 +866,7 @@ export default function CalendarModule({ ctx }) {
       </div>
 
       {/* Day agenda pane */}
-      <div className={(isWide ? "w-[360px]" : "") + " glass rounded-2xl p-3 flex flex-col overflow-hidden"}>
+      <div className={(isWide ? "w-[360px]" : "") + " glass rounded-2xl p-3 flex flex-col overflow-hidden"} style={{ background: "var(--cal-panel2)", border: "1px solid var(--cal-border)" }}>
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
             <div className="text-xs opacity-70">Selected day</div>
@@ -854,7 +897,7 @@ export default function CalendarModule({ ctx }) {
               <CollapsibleSection ctx={ctx} sectionKey="important" title="Important dates">
                 <div className="space-y-2">
                   {items.map(({ day, occ }) => (
-                    <div key={occ.key} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                    <div key={occ.key} className="rounded-xl px-3 py-2 text-sm" style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}>
                       <div className="text-xs opacity-70">{dayLabel(day)}</div>
                       <div className="font-medium">{occ.title}</div>
                     </div>
@@ -927,7 +970,8 @@ export default function CalendarModule({ ctx }) {
                       {chores.map((c) => (
                         <div
                           key={c.id}
-                          className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
+                          className="rounded-xl px-3 py-2 text-sm flex items-center justify-between"
+                          style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}
                         >
                           <div className={c.done ? "line-through opacity-70" : ""}>
                             <span className="opacity-80">{c.person}:</span> {c.name}
@@ -942,7 +986,7 @@ export default function CalendarModule({ ctx }) {
                   <CollapsibleSection ctx={ctx} sectionKey="meals" title="Meals">
                     <div className="space-y-2">
                       {meals.map((m, i) => (
-                        <div key={i} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                        <div key={i} className="rounded-xl px-3 py-2 text-sm" style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}>
                           <div className="font-medium">{m.slot ? `${m.slot}: ` : ""}{m.name || "(Meal)"}</div>
                           {m.notes && <div className="text-xs opacity-60">{m.notes}</div>}
                         </div>
@@ -999,7 +1043,8 @@ export default function CalendarModule({ ctx }) {
                         {grouped[d].map((c) => (
                           <div
                             key={c.id}
-                            className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
+                            className="rounded-xl px-3 py-2 text-sm flex items-center justify-between"
+                            style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}
                           >
                             <div className={c.done ? "line-through opacity-70" : ""}>
                               <span className="opacity-80">{c.person}:</span> {c.name}
@@ -1060,7 +1105,7 @@ export default function CalendarModule({ ctx }) {
                       <div className="text-xs opacity-70">{dayLabel(d)}</div>
                       <div className="space-y-1">
                         {grouped[d].map((m, i) => (
-                          <div key={i} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                          <div key={i} className="rounded-xl px-3 py-2 text-sm" style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}>
                             <div className="font-medium">{m.name || "(Meal)"}</div>
                             {m.time && <div className="text-xs opacity-70">{m.time}</div>}
                             {m.notes && <div className="text-xs opacity-60">{m.notes}</div>}
@@ -1096,7 +1141,7 @@ export default function CalendarModule({ ctx }) {
                   <div className="text-sm opacity-80">Meals</div>
                   <div className="space-y-2">
                     {meals.map((m, i) => (
-                      <div key={i} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                      <div key={i} className="rounded-xl px-3 py-2 text-sm" style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}>
                         <div className="font-medium">{m.name || "(Meal)"}</div>
                         {m.time && <div className="text-xs opacity-70">{m.time}</div>}
                         {m.notes && <div className="text-xs opacity-60">{m.notes}</div>}
@@ -1174,7 +1219,7 @@ export default function CalendarModule({ ctx }) {
   );
 
   return (
-    <div ref={rootRef} className="h-full relative flex flex-col gap-3">
+    <div ref={rootRef} className="h-full relative flex flex-col gap-3" style={{ ...themeVars, color: "var(--cal-text)", background: "var(--cal-panel)" }}>
       {main}
 
       {editor && (

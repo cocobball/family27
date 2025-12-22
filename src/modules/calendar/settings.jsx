@@ -69,9 +69,11 @@ function normalizeEvent(ev) {
 
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
-  const data = useMemo(() => ctx.store.get(defaultFn), [ctx, defaultFn, rev]);
+  const data = useMemo(() => ctx.store.get(defaultFn()), [ctx, defaultFn, rev]);
   const patch = (partial) => {
-    ctx.store.patch(partial);
+    const cur = ctx.store.get(defaultFn());
+    const next = { ...(cur || {}), ...(partial || {}) };
+    ctx.store.set(next);
     setRev((r) => r + 1);
   };
   return { data, patch };
@@ -90,6 +92,7 @@ export default function CalendarSettings({ ctx }) {
   const showImportant = data.ui?.showImportant ?? true;
   const showMeals = data.ui?.showMeals ?? false;
   const choresView = data.ui?.choresView ?? "day";
+  const calendarPalette = data.ui?.calendarPalette ?? "default";
   
   const updateUI = (partial) => patch({ ui: { ...(data.ui || {}), ...partial } });
   
@@ -255,6 +258,25 @@ export default function CalendarSettings({ ctx }) {
       <div>
         <div className="text-lg font-semibold">Calendar Settings</div>
         <div className="text-sm opacity-75">Applies instantly and persists in the unified dashboard DB.</div>
+      </div>
+
+      <div className="glass rounded-2xl p-4 space-y-3">
+        <div className="font-semibold">Theme / Colors</div>
+        
+        <div className="space-y-1">
+          <div className="text-xs opacity-70">Palette</div>
+          <select
+            className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-base"
+            value={calendarPalette}
+            onChange={(e) => updateUI({ calendarPalette: e.target.value })}
+          >
+            <option value="default">Default</option>
+            <option value="light">Light</option>
+            <option value="frost">Frost</option>
+            <option value="midnight">Midnight</option>
+            <option value="contrast">Contrast</option>
+          </select>
+        </div>
       </div>
 
       <div className="glass rounded-2xl p-4 space-y-3">
