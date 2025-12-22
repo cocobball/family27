@@ -165,6 +165,18 @@ export default function ChoresModule({ ctx }) {
     return dt instanceof Date && !isNaN(dt) ? dt : new Date();
   }, [selectedYMD]);
 
+  // Toggle done state for a chore for the current week
+  const toggleDone = (choreId) => {
+    setData((prev) => {
+      const s = normalizeChoresData(prev);
+      const wk = getWeekKey(baseDate);
+      const wkMap = s.doneByWeek?.[wk] || {};
+      const nextWk = { ...wkMap, [choreId]: !wkMap[choreId] };
+      if (!nextWk[choreId]) delete nextWk[choreId];
+      return { ...s, doneByWeek: { ...(s.doneByWeek || {}), [wk]: nextWk } };
+    });
+  };
+
   const viewMode = data.viewMode === "week" ? "week" : "day";
   const setViewMode = (mode) =>
     setData((prev) => {
@@ -311,14 +323,20 @@ export default function ChoresModule({ ctx }) {
                 <div key={person} className="py-2 border-b border-white/10 last:border-b-0">
                   <div className="text-sm font-semibold opacity-90 mb-1">{person}</div>
                   <div className="space-y-1">
-                    {list.map((c) => (
-                      <div key={c.id} className="flex items-center gap-2 text-sm opacity-90">
-                        <span className="inline-block w-4">{c.done ? "✅" : "⬜"}</span>
-                        <span className={c.done ? "line-through opacity-70" : ""}>
-                          {viewMode === "week" ? `${c.day}: ${c.name}` : c.name}
-                        </span>
-                      </div>
-                    ))}
+                          {list.map((c) => (
+                            <div key={c.id} className="flex items-center gap-2 text-sm opacity-90">
+                              <button
+                                type="button"
+                                onClick={() => toggleDone(c.id)}
+                                className="flex items-center gap-2 w-full text-left"
+                              >
+                                <span className="inline-block w-4">{c.done ? "✅" : "⬜"}</span>
+                                <span className={c.done ? "line-through opacity-70" : ""}>
+                                  {viewMode === "week" ? `${c.day}: ${c.name}` : c.name}
+                                </span>
+                              </button>
+                            </div>
+                          ))}
                   </div>
                 </div>
               );
