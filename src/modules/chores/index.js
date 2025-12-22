@@ -1,12 +1,12 @@
 import { ClipboardList } from "lucide-react";
-import Module from "./module.jsx";
-import { defaultData } from "./helpers.js";
+import ChoresModule from "./module.jsx";
+import { defaultChoresData } from "./helpers.js";
 
 export const moduleDef = {
   id: "chores",
   title: "Chores",
   icon: ClipboardList,
-  Component: Module,
-  defaultData,
-  dependencies: [],
+  Component: ChoresModule,
+  defaultData: defaultChoresData,
+  dependencies: ["calendar"], // optional; remove if you don't want this dependency
 };
