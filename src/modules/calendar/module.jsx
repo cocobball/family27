@@ -1,3 +1,47 @@
+// CollapsibleSection: reusable panel section with persistent collapsed state
+function CollapsibleSection({ ctx, sectionKey, title, rightSlot, children, defaultCollapsed = false }) {
+  // Get and persist collapsed state in ctx.store.ui.collapsedSections
+  const [rev, setRev] = useState(0);
+  const collapsedSections = ctx?.store?.get?.()?.ui?.collapsedSections || {};
+  const collapsed = collapsedSections[sectionKey] ?? defaultCollapsed;
+  const setCollapsed = (val) => {
+    const cur = ctx?.store?.get?.() || {};
+    const ui = { ...(cur.ui || {}), collapsedSections: { ...(cur.ui?.collapsedSections || {}), [sectionKey]: val } };
+    ctx?.store?.set?.({ ...cur, ui });
+    setRev((r) => r + 1);
+  };
+
+  // Animate height/opacity
+  const [show, setShow] = useState(!collapsed);
+  useEffect(() => setShow(!collapsed), [collapsed]);
+  return (
+    <div className="rounded-xl border border-white/15 bg-white/5">
+      <div className="flex items-center justify-between px-3 py-2 cursor-pointer select-none" onClick={() => setCollapsed(!collapsed)}>
+        <div className="font-medium text-sm flex-1 truncate">{title}</div>
+        {rightSlot}
+        <button
+          className="iconBtn !w-8 !h-8 !rounded-lg ml-2"
+          tabIndex={-1}
+          aria-label={collapsed ? `Expand ${title}` : `Collapse ${title}`}
+          onClick={e => { e.stopPropagation(); setCollapsed(!collapsed); }}
+          type="button"
+        >
+          <ChevronRight size={18} className={"transition-transform duration-200 " + (collapsed ? "rotate-0" : "rotate-90")} />
+        </button>
+      </div>
+      <div
+        className="transition-all duration-300 ease-in-out overflow-hidden"
+        style={{
+          maxHeight: show ? 500 : 0,
+          opacity: show ? 1 : 0,
+          pointerEvents: show ? 'auto' : 'none',
+        }}
+      >
+        <div className="px-3 pb-2 pt-1">{children}</div>
+      </div>
+    </div>
+  );
+}
 // src/modules/calendar/module.jsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1021,32 +1065,31 @@ export default function CalendarModule({ ctx }) {
 
         <div className="mt-3">
           {/* Important this month */}
-          {showImportant &&
-            (() => {
-              const items = [];
-              for (const [day, list] of Object.entries(filteredOccurrencesByDay)) {
-                if (monthStrFromDate(day) !== month) continue;
-                for (const o of list) if (o.important) items.push({ day, occ: o });
-              }
-              items.sort((a, b) =>
-                a.day === b.day
-                  ? (a.occ.startTime || "").localeCompare(b.occ.startTime || "")
-                  : a.day.localeCompare(b.day)
-              );
-              return items.length ? (
+          {showImportant && (() => {
+            const items = [];
+            for (const [day, list] of Object.entries(filteredOccurrencesByDay)) {
+              if (monthStrFromDate(day) !== month) continue;
+              for (const o of list) if (o.important) items.push({ day, occ: o });
+            }
+            items.sort((a, b) =>
+              a.day === b.day
+                ? (a.occ.startTime || "").localeCompare(b.occ.startTime || "")
+                : a.day.localeCompare(b.day)
+            );
+            if (!items.length) return null;
+            return (
+              <CollapsibleSection ctx={ctx} sectionKey="important" title="Important dates">
                 <div className="space-y-2">
-                  <div className="text-sm opacity-80">Important this month</div>
-                  <div className="space-y-2">
-                    {items.map(({ day, occ }) => (
-                      <div key={occ.key} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
-                        <div className="text-xs opacity-70">{dayLabel(day)}</div>
-                        <div className="font-medium">{occ.title}</div>
-                      </div>
-                    ))}
-                  </div>
+                  {items.map(({ day, occ }) => (
+                    <div key={occ.key} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                      <div className="text-xs opacity-70">{dayLabel(day)}</div>
+                      <div className="font-medium">{occ.title}</div>
+                    </div>
+                  ))}
                 </div>
-              ) : null;
-            })()}
+              </CollapsibleSection>
+            );
+          })()}
 
           {/* Chores and Meals area (day view) */}
           {choresView === "day" && (showChores || showMeals) && (() => {
@@ -1106,8 +1149,7 @@ export default function CalendarModule({ ctx }) {
             return (
               <div className="mt-4 space-y-2">
                 {chores.length > 0 && (
-                  <>
-                    <div className="text-sm opacity-80">Chores</div>
+                  <CollapsibleSection ctx={ctx} sectionKey="chores" title="Chores">
                     <div className="space-y-2">
                       {chores.map((c) => (
                         <div
@@ -1121,11 +1163,10 @@ export default function CalendarModule({ ctx }) {
                         </div>
                       ))}
                     </div>
-                  </>
+                  </CollapsibleSection>
                 )}
                 {meals.length > 0 && (
-                  <>
-                    <div className="text-sm opacity-80">Meals</div>
+                  <CollapsibleSection ctx={ctx} sectionKey="meals" title="Meals">
                     <div className="space-y-2">
                       {meals.map((m, i) => (
                         <div key={i} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
@@ -1134,7 +1175,7 @@ export default function CalendarModule({ ctx }) {
                         </div>
                       ))}
                     </div>
-                  </>
+                  </CollapsibleSection>
                 )}
               </div>
             );
