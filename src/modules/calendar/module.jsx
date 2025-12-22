@@ -33,18 +33,29 @@ import {
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
 
-  const data = useMemo(() => ctx.store.get(defaultFn), [ctx, defaultFn, rev]);
+  // IMPORTANT: call defaultFn() to pass a value to ctx.store.get
+  const data = useMemo(() => ctx.store.get(defaultFn()), [ctx, defaultFn, rev]);
 
-  const patch = useCallback((partial) => {
-    const next = ctx.store.patch(partial);
-    setRev((r) => r + 1);
-    return next;
-  }, [ctx]);
+  // IMPORTANT: don't rely on ctx.store.patch (may not exist / may not merge the way we expect)
+  // Use a safe merge and then ctx.store.set(next)
+  const patch = useCallback(
+    (partial) => {
+      const cur = ctx.store.get(defaultFn());
+      const next = { ...(cur || {}), ...(partial || {}) };
+      ctx.store.set(next);
+      setRev((r) => r + 1);
+      return next;
+    },
+    [ctx, defaultFn]
+  );
 
-  const set = useCallback((val) => {
-    ctx.store.set(val);
-    setRev((r) => r + 1);
-  }, [ctx]);
+  const set = useCallback(
+    (val) => {
+      ctx.store.set(val);
+      setRev((r) => r + 1);
+    },
+    [ctx]
+  );
 
   const refresh = useCallback(() => setRev((r) => r + 1), []);
 
@@ -71,6 +82,7 @@ function IconPill({ active, onClick, icon: Icon, label }) {
       className={"btn !px-3 !py-2 inline-flex items-center gap-2 " + (active ? "btnPrimary" : "")}
       onClick={onClick}
       aria-pressed={active}
+      type="button"
     >
       <Icon size={16} />
       <span className="text-sm">{label}</span>
@@ -85,6 +97,7 @@ function EventChip({ occ, prefs, onClick }) {
       className="w-full text-left rounded-xl px-2 py-1 bg-white/5 border border-white/10 active:translate-y-[1px]"
       onClick={onClick}
       title={occ.title}
+      type="button"
     >
       <div className="flex items-center gap-2 min-w-0">
         <div className="text-[10px] opacity-70 shrink-0">{time}</div>
@@ -107,7 +120,12 @@ function DayCell({ dateStr, inMonth, isToday, isSelected, occs, prefs, onSelect,
       tabIndex={0}
     >
       <div className="flex items-center justify-between gap-2">
-        <div className={"text-xs font-semibold " + (isToday ? "text-[color-mix(in srgb, var(--accent) 70%, white)]" : "")}>
+        <div
+          className={
+            "text-xs font-semibold " +
+            (isToday ? "text-[color-mix(in srgb, var(--accent) 70%, white)]" : "")
+          }
+        >
           {Number(dateStr.slice(8, 10))}
         </div>
         <button
@@ -117,6 +135,7 @@ function DayCell({ dateStr, inMonth, isToday, isSelected, occs, prefs, onSelect,
             onQuickAdd(dateStr);
           }}
           aria-label="Add event"
+          type="button"
         >
           <Plus size={16} />
         </button>
@@ -133,9 +152,7 @@ function DayCell({ dateStr, inMonth, isToday, isSelected, occs, prefs, onSelect,
                 <div className="text-xs truncate">{occ.title || "(Untitled)"}</div>
               </div>
             ))}
-            {occs.length > 2 && (
-              <div className="text-[10px] opacity-70">+{occs.length - 2} more</div>
-            )}
+            {occs.length > 2 && <div className="text-[10px] opacity-70">+{occs.length - 2} more</div>}
           </>
         ) : (
           <div className="text-[10px] opacity-50">—</div>
@@ -151,7 +168,7 @@ function ModalShell({ title, onClose, children, footer }) {
       <div className="h-full w-full glass rounded-[1.75rem] overflow-hidden flex flex-col">
         <div className="h-14 px-4 flex items-center justify-between border-b hairline">
           <div className="font-semibold">{title}</div>
-          <button className="iconBtn" onClick={onClose} aria-label="Close">
+          <button className="iconBtn" onClick={onClose} aria-label="Close" type="button">
             <X size={18} />
           </button>
         </div>
@@ -162,15 +179,7 @@ function ModalShell({ title, onClose, children, footer }) {
   );
 }
 
-function EventEditor({
-  prefs,
-  calendars,
-  initial,
-  isEdit,
-  onCancel,
-  onSave,
-  onDelete,
-}) {
+function EventEditor({ prefs, calendars, initial, isEdit, onCancel, onSave, onDelete }) {
   const [ev, setEv] = useState(() => normalizeEvent(initial));
   const [repeat, setRepeat] = useState(() => {
     const r = ev.recurrence;
@@ -181,7 +190,6 @@ function EventEditor({
   useEffect(() => setEv(normalizeEvent(initial)), [initial]);
 
   const calOptions = calendars.filter((c) => !c.archived);
-
   const canSave = (ev.title ?? "").trim().length > 0 && !!ev.startDate;
 
   const setField = (k, v) => setEv((s) => ({ ...s, [k]: v }));
@@ -210,7 +218,8 @@ function EventEditor({
       const next = { ...base, freq, interval: Number(base.interval ?? 1) };
       if (freq === "WEEKLY") {
         const dow = new Date(s.startDate + "T12:00:00").getDay();
-        next.byWeekday = Array.isArray(base.byWeekday) && base.byWeekday.length ? base.byWeekday : [dow];
+        next.byWeekday =
+          Array.isArray(base.byWeekday) && base.byWeekday.length ? base.byWeekday : [dow];
       } else {
         delete next.byWeekday;
       }
@@ -221,17 +230,20 @@ function EventEditor({
   const footer = (
     <div className="flex items-center justify-between gap-2">
       {isEdit ? (
-        <button className="btn" onClick={() => onDelete(ev)} title="Delete">
+        <button className="btn" onClick={() => onDelete(ev)} title="Delete" type="button">
           <Trash2 size={16} /> Delete
         </button>
       ) : (
         <div />
       )}
       <div className="flex items-center gap-2">
-        <button className="btn" onClick={onCancel}><X size={16} /> Cancel</button>
+        <button className="btn" onClick={onCancel} type="button">
+          <X size={16} /> Cancel
+        </button>
         <button
           className={"btn " + (canSave ? "btnPrimary" : "opacity-50 pointer-events-none")}
           onClick={() => onSave(normalizeEvent({ ...ev, updatedAt: new Date().toISOString() }))}
+          type="button"
         >
           <Check size={16} /> {isEdit ? "Save" : "Add"}
         </button>
@@ -261,7 +273,9 @@ function EventEditor({
               onChange={(e) => setField("calendarId", e.target.value)}
             >
               {calOptions.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
               ))}
             </select>
           </div>
@@ -271,6 +285,7 @@ function EventEditor({
             <button
               className={"btn w-full justify-center " + (ev.allDay ? "btnPrimary" : "")}
               onClick={() => setField("allDay", !ev.allDay)}
+              type="button"
             >
               <CalendarDays size={16} /> {ev.allDay ? "All day" : "Timed"}
             </button>
@@ -335,6 +350,7 @@ function EventEditor({
                 key={k}
                 className={"btn !px-3 !py-2 " + (repeat === k ? "btnPrimary" : "")}
                 onClick={() => applyRepeat(k)}
+                type="button"
               >
                 {label}
               </button>
@@ -360,7 +376,13 @@ function EventEditor({
                     }
                   />
                   <div className="text-sm opacity-80">
-                    {repeat === "daily" ? "day(s)" : repeat === "weekly" ? "week(s)" : repeat === "monthly" ? "month(s)" : "year(s)"}
+                    {repeat === "daily"
+                      ? "day(s)"
+                      : repeat === "weekly"
+                        ? "week(s)"
+                        : repeat === "monthly"
+                          ? "month(s)"
+                          : "year(s)"}
                   </div>
                 </div>
               </div>
@@ -370,13 +392,14 @@ function EventEditor({
                   <div className="text-xs opacity-70">On</div>
                   <div className="flex flex-wrap gap-2">
                     {["S", "M", "T", "W", "T", "F", "S"].map((lab, i) => {
-                      const d = i; // Sunday=0
+                      const d = i;
                       const active = (ev.recurrence?.byWeekday ?? []).includes(d);
                       return (
                         <button
                           key={i}
                           className={"btn !px-3 !py-2 " + (active ? "btnPrimary" : "")}
                           onClick={() => toggleDow(d)}
+                          type="button"
                         >
                           {lab}
                         </button>
@@ -439,40 +462,39 @@ export default function CalendarModule({ ctx }) {
   const calendars = data.calendars ?? defaultCalendarData().calendars;
   const events = data.events ?? [];
 
-  const selectedDate = ctx.sharedState.get().selectedDate;
-  const [sel, setSel] = useState(selectedDate);
-  const [calendarData, setCalendarData] = useState(ctx.store.get({ version: 1, showChores: true }));
-  const [choresForSelectedDate, setChoresForSelectedDate] = useState(
-    ctx.sharedState.get().choresForSelectedDate || []
-  );
-  const [month, setMonth] = useState(() => monthStrFromDate(selectedDate) || todayStr().slice(0, 7));
+  // IMPORTANT: selected date must have a safe default
+  const shared = ctx.sharedState.get?.() || {};
+  const initialSelected = shared.selectedDate || todayStr();
+
+  const [sel, setSel] = useState(initialSelected);
+  const [choresForSelectedDate, setChoresForSelectedDate] = useState(shared.choresForSelectedDate || []);
+  const [month, setMonth] = useState(() => monthStrFromDate(initialSelected) || todayStr().slice(0, 7));
+
+  // UI settings stored IN module data (so we never overwrite the store)
+  const showChores = data.ui?.showChores ?? true;
 
   // Editor modal state
-  const [editor, setEditor] = useState(null); // { mode: "add"|"edit", baseId?, occurrenceKey?, initialEvent }
+  const [editor, setEditor] = useState(null);
 
   useEffect(() => {
     const unsub = ctx.sharedState.subscribe((s) => {
-      setSel(s.selectedDate);
+      const nextSel = s.selectedDate || todayStr();
+      setSel(nextSel);
       setChoresForSelectedDate(s.choresForSelectedDate || []);
-      if (s.selectedDate && monthStrFromDate(s.selectedDate) !== month) {
-        setMonth(monthStrFromDate(s.selectedDate));
-      }
+
+      const m = monthStrFromDate(nextSel);
+      if (m) setMonth((cur) => (cur === m ? cur : m));
     });
     return unsub;
-  }, [ctx, month]);
+  }, [ctx]);
 
-  // Persist last open month in prefs (cheap)
+  // Persist last open month in prefs
   useEffect(() => {
     if (prefs.defaultMonth !== month) {
       patch({ prefs: { ...prefs, defaultMonth: month } });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month]);
-
-  // Persist calendar settings (showChores etc.)
-  useEffect(() => {
-    ctx.store.set(calendarData);
-  }, [calendarData, ctx]);
 
   const { weeks, rangeStart, rangeEnd } = useMemo(
     () => getMonthGrid(month, prefs.weekStart ?? 0),
@@ -483,11 +505,6 @@ export default function CalendarModule({ ctx }) {
     () => (rangeStart && rangeEnd ? buildOccurrencesByDay(events, rangeStart, rangeEnd) : {}),
     [events, rangeStart, rangeEnd]
   );
-
-  const selectedOccs = useMemo(() => {
-    const list = occurrencesByDay[sel] ?? [];
-    return sortEventsForDay(list, prefs);
-  }, [occurrencesByDay, sel, prefs]);
 
   const enabledCalIds = useMemo(() => {
     const ids = new Set();
@@ -510,74 +527,77 @@ export default function CalendarModule({ ctx }) {
     return sortEventsForDay(list, prefs);
   }, [filteredOccurrencesByDay, sel, prefs]);
 
-  const onSelectDate = useCallback((dateStr) => {
-    setSel(dateStr);
-    ctx.sharedState.set({ selectedDate: dateStr });
-    ctx.eventBus.emit("selectedDate:changed", dateStr);
-    const m = monthStrFromDate(dateStr);
-    if (m && m !== month) setMonth(m);
-  }, [ctx, month]);
+  const onSelectDate = useCallback(
+    (dateStr) => {
+      setSel(dateStr);
+      ctx.sharedState.set({ selectedDate: dateStr });
+      ctx.eventBus.emit("selectedDate:changed", dateStr);
 
-  const onGoToday = useCallback(() => {
-    const t = todayStr();
-    onSelectDate(t);
-  }, [onSelectDate]);
+      const m = monthStrFromDate(dateStr);
+      if (m) setMonth((cur) => (cur === m ? cur : m));
+    },
+    [ctx]
+  );
 
+  const onGoToday = useCallback(() => onSelectDate(todayStr()), [onSelectDate]);
   const onPrevMonth = useCallback(() => setMonth((m) => addMonthsStr(m, -1)), []);
   const onNextMonth = useCallback(() => setMonth((m) => addMonthsStr(m, 1)), []);
 
   const setView = useCallback((view) => patch({ prefs: { ...prefs, view } }), [patch, prefs]);
 
-  const openAdd = useCallback((dateStr) => {
-    const next = normalizeEvent({
-      id: uid("ev"),
-      title: "",
-      calendarId: calendars.find((c) => c.enabled && !c.archived)?.id ?? "family",
-      startDate: dateStr ?? sel ?? todayStr(),
-      endDate: dateStr ?? sel ?? todayStr(),
-      allDay: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      recurrence: null,
-    });
-    setEditor({ mode: "add", initialEvent: next });
-  }, [calendars, sel]);
+  const openAdd = useCallback(
+    (dateStr) => {
+      const next = normalizeEvent({
+        id: uid("ev"),
+        title: "",
+        calendarId: calendars.find((c) => c.enabled && !c.archived)?.id ?? "family",
+        startDate: dateStr ?? sel ?? todayStr(),
+        endDate: dateStr ?? sel ?? todayStr(),
+        allDay: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        recurrence: null,
+      });
+      setEditor({ mode: "add", initialEvent: next });
+    },
+    [calendars, sel]
+  );
 
-  const openEdit = useCallback((occ) => {
-    const base = events.find((e) => e.id === (occ.baseId ?? occ.id)) ?? occ;
-    setEditor({ mode: "edit", baseId: base.id, initialEvent: base });
-  }, [events]);
+  const openEdit = useCallback(
+    (occ) => {
+      const base = events.find((e) => e.id === (occ.baseId ?? occ.id)) ?? occ;
+      setEditor({ mode: "edit", baseId: base.id, initialEvent: base });
+    },
+    [events]
+  );
 
-  const saveEvent = useCallback((ev) => {
-    const next = normalizeEvent(ev);
-    patch({
-      events: (() => {
-        const list = [...events];
-        const idx = list.findIndex((e) => e.id === next.id);
-        if (idx >= 0) list[idx] = next;
-        else list.push(next);
-        return list;
-      })(),
-    });
-    setEditor(null);
-  }, [events, patch]);
+  const saveEvent = useCallback(
+    (ev) => {
+      const next = normalizeEvent(ev);
+      patch({
+        events: (() => {
+          const list = [...events];
+          const idx = list.findIndex((e) => e.id === next.id);
+          if (idx >= 0) list[idx] = next;
+          else list.push(next);
+          return list;
+        })(),
+      });
+      setEditor(null);
+    },
+    [events, patch]
+  );
 
-  const deleteEvent = useCallback((ev) => {
-    patch({ events: events.filter((e) => e.id !== ev.id) });
-    setEditor(null);
-  }, [events, patch]);
+  const deleteEvent = useCallback(
+    (ev) => {
+      patch({ events: events.filter((e) => e.id !== ev.id) });
+      setEditor(null);
+    },
+    [events, patch]
+  );
 
   const dayHeader = useMemo(() => dayLabel(sel), [sel]);
-
   const dowLabels = useMemo(() => getDowLabels(prefs.weekStart ?? 0), [prefs.weekStart]);
-
-  const monthDaysInMonth = useMemo(() => {
-    const curMonth = month;
-    const set = new Set();
-    for (const w of weeks) for (const d of w) if (monthStrFromDate(d) === curMonth) set.add(d);
-    return set;
-  }, [weeks, month]);
-
   const view = prefs.view ?? "month";
 
   const main = (
@@ -590,11 +610,13 @@ export default function CalendarModule({ ctx }) {
             <div className="font-semibold truncate">{monthLabel(month)}</div>
           </div>
           <div className="flex items-center gap-2">
-            <button className="iconBtn" onClick={onPrevMonth} aria-label="Previous month">
+            <button className="iconBtn" onClick={onPrevMonth} aria-label="Previous month" type="button">
               <ChevronLeft size={18} />
             </button>
-            <button className="btn" onClick={onGoToday}>Today</button>
-            <button className="iconBtn" onClick={onNextMonth} aria-label="Next month">
+            <button className="btn" onClick={onGoToday} type="button">
+              Today
+            </button>
+            <button className="iconBtn" onClick={onNextMonth} aria-label="Next month" type="button">
               <ChevronRight size={18} />
             </button>
           </div>
@@ -602,25 +624,10 @@ export default function CalendarModule({ ctx }) {
 
         {/* View toggle */}
         <div className="pt-3 flex flex-wrap gap-2">
-          <IconPill
-            active={view === "month"}
-            onClick={() => setView("month")}
-            icon={Rows3}
-            label="Month"
-          />
-          <IconPill
-            active={view === "week"}
-            onClick={() => setView("week")}
-            icon={CalendarDays}
-            label="Week"
-          />
-          <IconPill
-            active={view === "agenda"}
-            onClick={() => setView("agenda")}
-            icon={List}
-            label="Agenda"
-          />
-          <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={() => openAdd(sel)}>
+          <IconPill active={view === "month"} onClick={() => setView("month")} icon={Rows3} label="Month" />
+          <IconPill active={view === "week"} onClick={() => setView("week")} icon={CalendarDays} label="Week" />
+          <IconPill active={view === "agenda"} onClick={() => setView("agenda")} icon={List} label="Agenda" />
+          <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={() => openAdd(sel)} type="button">
             <Plus size={16} /> Add
           </button>
         </div>
@@ -633,7 +640,9 @@ export default function CalendarModule({ ctx }) {
             <div className="space-y-2">
               <div className="grid grid-cols-7 gap-2">
                 {dowLabels.map((d) => (
-                  <div key={d} className="text-[11px] opacity-70 px-1">{d}</div>
+                  <div key={d} className="text-[11px] opacity-70 px-1">
+                    {d}
+                  </div>
                 ))}
               </div>
               <div className="grid grid-cols-7 gap-2">
@@ -657,7 +666,6 @@ export default function CalendarModule({ ctx }) {
           {view === "week" && (
             <WeekList
               weekStartDate={(() => {
-                // Start week from selected date and prefs.weekStart
                 const dt = new Date(sel + "T12:00:00");
                 const ws = prefs.weekStart ?? 0;
                 const dow = dt.getDay();
@@ -696,7 +704,7 @@ export default function CalendarModule({ ctx }) {
             <div className="text-xs opacity-70">Selected day</div>
             <div className="font-semibold truncate">{dayHeader}</div>
           </div>
-          <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={() => openAdd(sel)}>
+          <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={() => openAdd(sel)} type="button">
             <Plus size={16} /> Add
           </button>
         </div>
@@ -707,13 +715,13 @@ export default function CalendarModule({ ctx }) {
           <label className="flex items-center gap-2 text-sm opacity-80 select-none">
             <input
               type="checkbox"
-              checked={!!calendarData.showChores}
-              onChange={(e) => setCalendarData((p) => ({ ...p, showChores: e.target.checked }))}
+              checked={!!showChores}
+              onChange={(e) => patch({ ui: { ...(data.ui || {}), showChores: e.target.checked } })}
             />
             Show chores
           </label>
 
-          {calendarData.showChores && choresForSelectedDate.length ? (
+          {showChores && choresForSelectedDate.length ? (
             <div className="mt-4 space-y-2">
               <div className="text-sm opacity-80">Chores</div>
 
@@ -734,7 +742,7 @@ export default function CalendarModule({ ctx }) {
           ) : null}
         </div>
 
-        <div className="flex-1 overflow-auto space-y-2">
+        <div className="flex-1 overflow-auto space-y-2 mt-3">
           {filteredSelectedOccs.length ? (
             filteredSelectedOccs.map((occ) => (
               <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => openEdit(occ)} />
@@ -773,28 +781,27 @@ export default function CalendarModule({ ctx }) {
 function CalendarToggles({ calendars, onChange }) {
   const list = calendars ?? [];
   const toggle = (id) => {
-    onChange(
-      list.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c))
-    );
+    onChange(list.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c)));
   };
 
   return (
     <div className="space-y-2">
       <div className="text-xs opacity-70">Calendars</div>
       <div className="flex flex-wrap gap-2">
-        {list.filter((c) => !c.archived).map((c) => (
-          <button
-            key={c.id}
-            className={"btn !px-3 !py-2 " + (c.enabled ? "btnPrimary" : "")}
-            onClick={() => toggle(c.id)}
-          >
-            {c.name}
-          </button>
-        ))}
+        {list
+          .filter((c) => !c.archived)
+          .map((c) => (
+            <button
+              key={c.id}
+              className={"btn !px-3 !py-2 " + (c.enabled ? "btnPrimary" : "")}
+              onClick={() => toggle(c.id)}
+              type="button"
+            >
+              {c.name}
+            </button>
+          ))}
       </div>
-      <div className="text-[11px] opacity-60">
-        Toggle calendars on/off without deleting data.
-      </div>
+      <div className="text-[11px] opacity-60">Toggle calendars on/off without deleting data.</div>
     </div>
   );
 }
@@ -811,12 +818,18 @@ function WeekList({ weekStartDate, prefs, occurrencesByDay, selectedDate, onSele
       {days.map((d) => {
         const occs = sortEventsForDay(occurrencesByDay[d] ?? [], prefs);
         return (
-          <div key={d} className={"rounded-2xl border border-white/10 p-3 " + (d === selectedDate ? "bg-white/10" : "bg-white/5")}>
+          <div
+            key={d}
+            className={
+              "rounded-2xl border border-white/10 p-3 " +
+              (d === selectedDate ? "bg-white/10" : "bg-white/5")
+            }
+          >
             <div className="flex items-center justify-between gap-2">
-              <button className="text-left min-w-0" onClick={() => onSelect(d)}>
+              <button className="text-left min-w-0" onClick={() => onSelect(d)} type="button">
                 <div className="font-semibold truncate">{dayLabel(d)}</div>
               </button>
-              <button className="btn !px-3 !py-2" onClick={() => onAdd(d)}>
+              <button className="btn !px-3 !py-2" onClick={() => onAdd(d)} type="button">
                 <Plus size={16} /> Add
               </button>
             </div>
@@ -857,14 +870,17 @@ function AgendaRange({ startDate, endDate, prefs, occurrencesByDay, selectedDate
         return (
           <div
             key={d}
-            className={"rounded-2xl border border-white/10 p-3 " + (d === selectedDate ? "bg-white/10" : "bg-white/5")}
+            className={
+              "rounded-2xl border border-white/10 p-3 " +
+              (d === selectedDate ? "bg-white/10" : "bg-white/5")
+            }
           >
             <div className="flex items-center justify-between gap-2">
-              <button className="text-left min-w-0" onClick={() => onSelect(d)}>
+              <button className="text-left min-w-0" onClick={() => onSelect(d)} type="button">
                 <div className="font-semibold truncate">{dayLabel(d)}</div>
                 <div className="text-xs opacity-70">{has ? `${occs.length} event(s)` : "No events"}</div>
               </button>
-              <button className="btn !px-3 !py-2" onClick={() => onAdd(d)}>
+              <button className="btn !px-3 !py-2" onClick={() => onAdd(d)} type="button">
                 <Plus size={16} /> Add
               </button>
             </div>
