@@ -8,6 +8,7 @@ export function defaultCalendarData() {
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   return {
     version: 1,
+    showChores: true,
     calendars: [
       { id: "family", name: "Family", enabled: true, archived: false },
       { id: "school", name: "School", enabled: true, archived: false },

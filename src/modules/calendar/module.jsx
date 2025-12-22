@@ -441,6 +441,10 @@ export default function CalendarModule({ ctx }) {
 
   const selectedDate = ctx.sharedState.get().selectedDate;
   const [sel, setSel] = useState(selectedDate);
+  const [calendarData, setCalendarData] = useState(ctx.store.get({ version: 1, showChores: true }));
+  const [choresForSelectedDate, setChoresForSelectedDate] = useState(
+    ctx.sharedState.get().choresForSelectedDate || []
+  );
   const [month, setMonth] = useState(() => monthStrFromDate(selectedDate) || todayStr().slice(0, 7));
 
   // Editor modal state
@@ -449,6 +453,7 @@ export default function CalendarModule({ ctx }) {
   useEffect(() => {
     const unsub = ctx.sharedState.subscribe((s) => {
       setSel(s.selectedDate);
+      setChoresForSelectedDate(s.choresForSelectedDate || []);
       if (s.selectedDate && monthStrFromDate(s.selectedDate) !== month) {
         setMonth(monthStrFromDate(s.selectedDate));
       }
@@ -463,6 +468,11 @@ export default function CalendarModule({ ctx }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month]);
+
+  // Persist calendar settings (showChores etc.)
+  useEffect(() => {
+    ctx.store.set(calendarData);
+  }, [calendarData, ctx]);
 
   const { weeks, rangeStart, rangeEnd } = useMemo(
     () => getMonthGrid(month, prefs.weekStart ?? 0),
@@ -692,6 +702,37 @@ export default function CalendarModule({ ctx }) {
         </div>
 
         <div className="pt-3 border-t hairline" />
+
+        <div className="mt-3">
+          <label className="flex items-center gap-2 text-sm opacity-80 select-none">
+            <input
+              type="checkbox"
+              checked={!!calendarData.showChores}
+              onChange={(e) => setCalendarData((p) => ({ ...p, showChores: e.target.checked }))}
+            />
+            Show chores
+          </label>
+
+          {calendarData.showChores && choresForSelectedDate.length ? (
+            <div className="mt-4 space-y-2">
+              <div className="text-sm opacity-80">Chores</div>
+
+              <div className="space-y-2">
+                {choresForSelectedDate.map((c) => (
+                  <div
+                    key={c.id}
+                    className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
+                  >
+                    <div className={c.done ? "line-through opacity-70" : ""}>
+                      <span className="opacity-80">{c.person}:</span> {c.name}
+                    </div>
+                    <div className="text-xs opacity-70">{c.done ? "done" : ""}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         <div className="flex-1 overflow-auto space-y-2">
           {filteredSelectedOccs.length ? (
