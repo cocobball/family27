@@ -88,6 +88,35 @@ export default function MealsModule({ ctx }) {
 
   const [data, setData] = useState(() => migrateData(ctx.store.get(defaultData)));
 
+  // Module-scoped CSS for select dropdowns
+  useEffect(() => {
+    const styleId = "meals-select-styles";
+    if (document.getElementById(styleId)) return;
+    
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      .meals-module-select {
+        background-color: rgba(20, 20, 24, 0.95) !important;
+        color: rgba(255, 255, 255, 0.92) !important;
+      }
+      .meals-module-select option {
+        background-color: rgba(20, 20, 24, 0.95);
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .meals-module-select option:hover,
+      .meals-module-select option:checked {
+        background-color: rgba(40, 40, 44, 0.95);
+      }
+    `;
+    document.head.appendChild(style);
+    
+    return () => {
+      const el = document.getElementById(styleId);
+      if (el) el.remove();
+    };
+  }, []);
+
   // Persist
   useEffect(() => {
     ctx.store.set(data);
@@ -677,7 +706,7 @@ export default function MealsModule({ ctx }) {
                             if (!v) return setSlot(slot.key, null);
                             setSlot(slot.key, { type: "recipe", id: v });
                           }}
-                          className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                          className="meals-module-select w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
                           title="Select a recipe"
                         >
                           <option value="">Select recipe…</option>
