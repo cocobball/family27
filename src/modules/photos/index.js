@@ -1,12 +1,11 @@
-import { Images } from "lucide-react";
+import { Image as ImageIcon } from "lucide-react";
 import Module from "./module.jsx";
-import { defaultData } from "./helpers.js";
+import Settings from "./settings.jsx";
 
 export const moduleDef = {
   id: "photos",
   title: "Photos",
-  icon: Images,
+  icon: ImageIcon,
   Component: Module,
-  defaultData,
-  dependencies: [],
+  SettingsComponent: Settings,
 };
