@@ -8,21 +8,16 @@ import {
   getWeekKey,
   getDayName,
   dateFromYMD,
-  groupChoresByDay,
   groupChoresByPerson,
   getChoresForDateWithDone,
 } from "./helpers.js";
 
 /**
- * Chores module
- * - UI/overlay style matches your old app example
- * - Persistent data in ctx.store (module-local)
- * - Publishes easy-to-consume views to ctx.sharedState for other modules:
- *    sharedState.choresByDay
- *    sharedState.choresForSelectedDate
- * - Emits events:
- *    eventBus.emit("chores:changed", { choresByDay, data })
- *    eventBus.emit("choresForDate:changed", { selectedDate, chores })
+ * Compatibility layer:
+ * - Some dashboards use ctx.store.get/set (module-local)
+ * - Some dashboards use ctx.store.getModuleData/setModuleData (moduleId-based)
+ * - Some dashboards use ctx.eventBus + ctx.sharedState
+ * - Some dashboards use ctx.bus + ctx.shared
  */
 
 // -----------------------------
@@ -52,79 +47,243 @@ export function useChoreModeEnabled() {
 }
 
 // -----------------------------
+// ctx compatibility helpers
+// -----------------------------
+function getBus(ctx) {
+  return ctx.bus || ctx.eventBus;
+}
+function getShared(ctx) {
+  return ctx.shared || ctx.sharedState;
+}
+function storeGet(ctx, fallbackValue) {
+  const s = ctx.store;
+  if (s?.getModuleData) return s.getModuleData(ctx.moduleId, fallbackValue);
+  if (s?.get) return s.get(fallbackValue);
+  return fallbackValue;
+}
+function storeSet(ctx, nextData) {
+  const s = ctx.store;
+  if (s?.setModuleData) return s.setModuleData(ctx.moduleId, nextData);
+  if (s?.set) return s.set(nextData);
+}
+function sharedGetSelectedYMD(ctx) {
+  const shared = getShared(ctx);
+  if (!shared) return null;
+
+  // Pattern A: shared.get("selectedDate")
+  if (typeof shared.get === "function") {
+    const v = shared.get("selectedDate");
+    if (typeof v === "string" && v) return v;
+    // Pattern B: shared.get() returns object
+    const obj = shared.get();
+    if (obj && typeof obj.selectedDate === "string") return obj.selectedDate;
+  }
+
+  return null;
+}
+function sharedSet(ctx, patchOrKey, maybeVal) {
+  const shared = getShared(ctx);
+  if (!shared) return;
+
+  // Pattern A: shared.set({ ... })
+  if (typeof shared.set === "function") {
+    if (typeof patchOrKey === "string") {
+      // support shared.set("key", value) if implemented
+      try {
+        return shared.set(patchOrKey, maybeVal);
+      } catch {
+        // fall through
+      }
+    }
+    return shared.set(patchOrKey);
+  }
+}
+
+// -----------------------------
+// view helpers
+// -----------------------------
+function getWeekChoresWithDone(normalized, baseDate) {
+  const weekKey = getWeekKey(baseDate);
+  const doneMap = normalized.doneByWeek?.[weekKey] || {};
+  const chores = (normalized.chores || []).map((c) => ({ ...c, done: !!doneMap[c.id] }));
+  return { weekKey, chores, doneMap };
+}
+
+function sortWeekList(list) {
+  const dayIndex = new Map(DAYS.map((d, i) => [d, i]));
+  return list.slice().sort((a, b) => {
+    const da = dayIndex.get(a.day) ?? 999;
+    const db = dayIndex.get(b.day) ?? 999;
+    if (da !== db) return da - db;
+    return (a.name || "").localeCompare(b.name || "");
+  });
+}
+
+// -----------------------------
 // Module root component
 // -----------------------------
 export default function ChoresModule({ ctx }) {
-  // small card + overlay
   const enabled = useChoreModeEnabled();
-  const [data, setData] = useState(() => normalizeChoresData(ctx.store.get(defaultChoresData())));
+  const bus = getBus(ctx);
 
-  // Persist to module store
+  const [data, setData] = useState(() => normalizeChoresData(storeGet(ctx, defaultChoresData())));
+  const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
+
+  // persist
   useEffect(() => {
-    ctx.store.set(data);
-  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+    storeSet(ctx, data);
+  }, [ctx, data]);
 
-  /**
-   * Publish chores views to sharedState so other modules can read them.
-   * This runs whenever chores data changes.
-   */
+  // listen to calendar changes (supports multiple payload shapes)
   useEffect(() => {
-    const normalized = normalizeChoresData(data);
-    const choresByDay = groupChoresByDay(normalized.chores);
+    const handler = (payload) => {
+      const ymd =
+        typeof payload === "string"
+          ? payload
+          : typeof payload?.date === "string"
+            ? payload.date
+            : typeof payload?.ymd === "string"
+              ? payload.ymd
+              : null;
 
-    // Update sharedState
-    const shared = ctx.sharedState.get() || {};
-    const selectedDate = shared.selectedDate;
-    const selectedDt = dateFromYMD(selectedDate);
-    const choresForSelectedDate = getChoresForDateWithDone(normalized, selectedDt);
-
-    ctx.sharedState.set({
-      choresByDay,
-      choresPeople: normalized.people,
-      choresForSelectedDate,
-    });
-
-    // Events for anyone listening
-    ctx.eventBus.emit("chores:changed", { choresByDay, data: normalized });
-    ctx.eventBus.emit("choresForDate:changed", { selectedDate, chores: choresForSelectedDate });
-  }, [data, ctx]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /**
-   * Keep choresForSelectedDate updated when calendar selection changes
-   */
-  useEffect(() => {
-    const handler = (ymd) => {
-      const normalized = normalizeChoresData(ctx.store.get(defaultChoresData()));
-      const dt = dateFromYMD(ymd);
-      const choresForSelectedDate = getChoresForDateWithDone(normalized, dt);
-      ctx.sharedState.set({ choresForSelectedDate });
-      ctx.eventBus.emit("choresForDate:changed", { selectedDate: ymd, chores: choresForSelectedDate });
+      if (ymd) {
+        setSelectedYMD(ymd);
+        // keep shared state in sync
+        sharedSet(ctx, { selectedDate: ymd });
+      }
     };
 
-    ctx.eventBus.on?.("selectedDate:changed", handler);
-    return () => ctx.eventBus.off?.("selectedDate:changed", handler);
-  }, [ctx]);
+    bus?.on?.("selectedDate:changed", handler);
+    return () => bus?.off?.("selectedDate:changed", handler);
+  }, [bus, ctx]);
 
-  const todayName = useMemo(() => getDayName(new Date()), []);
-  const weekKey = useMemo(() => getWeekKey(new Date()), []);
-  const todayChores = useMemo(() => data.chores.filter((c) => c.day === todayName), [data.chores, todayName]);
-  const doneMap = data.doneByWeek?.[weekKey] || {};
-  const doneCount = useMemo(() => todayChores.filter((c) => !!doneMap[c.id]).length, [todayChores, doneMap]);
+  const baseDate = useMemo(() => {
+    if (!selectedYMD) return new Date();
+    const dt = dateFromYMD(selectedYMD);
+    return dt instanceof Date && !isNaN(dt) ? dt : new Date();
+  }, [selectedYMD]);
+
+  const viewMode = data.viewMode === "week" ? "week" : "day";
+  const setViewMode = (mode) =>
+    setData((prev) => {
+      const s = normalizeChoresData(prev);
+      return { ...s, viewMode: mode };
+    });
+
+  const normalized = useMemo(() => normalizeChoresData(data), [data]);
+  const people = normalized.people || [];
+
+  const cardModel = useMemo(() => {
+    if (viewMode === "day") {
+      const choresForDay = getChoresForDateWithDone(normalized, baseDate);
+      const byPerson = groupChoresByPerson(choresForDay, people);
+      const total = choresForDay.length;
+      const done = choresForDay.filter((c) => c.done).length;
+      return {
+        mode: "day",
+        title: getDayName(baseDate),
+        subtitle: selectedYMD ? selectedYMD : "Today",
+        weekKey: getWeekKey(baseDate),
+        total,
+        done,
+        byPerson,
+      };
+    }
+
+    const { weekKey, chores } = getWeekChoresWithDone(normalized, baseDate);
+    const rawByPerson = groupChoresByPerson(chores, people);
+
+    const byPerson = {};
+    for (const person of people) {
+      byPerson[person] = sortWeekList(rawByPerson[person] || []);
+    }
+
+    const total = chores.length;
+    const done = chores.filter((c) => c.done).length;
+
+    return {
+      mode: "week",
+      title: "Week",
+      subtitle: `Week of ${weekKey}`,
+      weekKey,
+      total,
+      done,
+      byPerson,
+    };
+  }, [viewMode, normalized, baseDate, people, selectedYMD]);
+
+  // publish some values for other modules if they want them (safe for both shared APIs)
+  useEffect(() => {
+    sharedSet(ctx, {
+      choresViewMode: viewMode,
+      choresWeekKey: cardModel.weekKey,
+    });
+  }, [ctx, viewMode, cardModel.weekKey]);
 
   return (
-    <div className="h-full flex flex-col justify-between">
+    <div className="h-full flex flex-col">
       <div className="flex items-center gap-2">
         <ClipboardList size={18} />
         <div className="font-semibold">Chores</div>
+
+        <div className="ml-auto flex gap-1">
+          <button
+            onClick={() => setViewMode("day")}
+            className={`px-2 py-1 rounded-lg text-xs border transition-all ${
+              viewMode === "day" ? "bg-white/20 border-white/30" : "bg-white/5 border-white/10 hover:bg-white/10"
+            }`}
+          >
+            Day
+          </button>
+          <button
+            onClick={() => setViewMode("week")}
+            className={`px-2 py-1 rounded-lg text-xs border transition-all ${
+              viewMode === "week" ? "bg-white/20 border-white/30" : "bg-white/5 border-white/10 hover:bg-white/10"
+            }`}
+          >
+            Week
+          </button>
+        </div>
       </div>
 
-      <div className="mt-3 space-y-2">
-        <div className="text-sm opacity-80">{todayName}</div>
+      <div className="mt-3 space-y-2 flex-1 min-h-0">
+        <div className="text-sm opacity-80">
+          {cardModel.title} <span className="opacity-60">• {cardModel.subtitle}</span>
+        </div>
+
         <div className="rounded-2xl bg-white/5 border border-white/15 px-3 py-2">
           <div className="text-sm opacity-90">
-            {doneCount}/{todayChores.length} done today
+            {cardModel.done}/{cardModel.total} done
           </div>
-          <div className="text-xs opacity-70">Week of {weekKey}</div>
+          <div className="text-xs opacity-70">Week of {cardModel.weekKey}</div>
+        </div>
+
+        {/* THIS is what was missing: list on the dashboard card */}
+        <div className="rounded-2xl bg-white/5 border border-white/15 px-3 py-2 flex-1 min-h-0 overflow-auto">
+          {cardModel.total === 0 ? (
+            <div className="text-sm opacity-60 py-3">No chores to show.</div>
+          ) : (
+            people.map((person) => {
+              const list = cardModel.byPerson[person] || [];
+              if (!list.length) return null;
+
+              return (
+                <div key={person} className="py-2 border-b border-white/10 last:border-b-0">
+                  <div className="text-sm font-semibold opacity-90 mb-1">{person}</div>
+                  <div className="space-y-1">
+                    {list.map((c) => (
+                      <div key={c.id} className="flex items-center gap-2 text-sm opacity-90">
+                        <span className="inline-block w-4">{c.done ? "✅" : "⬜"}</span>
+                        <span className={c.done ? "line-through opacity-70" : ""}>
+                          {viewMode === "week" ? `${c.day}: ${c.name}` : c.name}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })
+          )}
         </div>
 
         <button
@@ -136,35 +295,36 @@ export default function ChoresModule({ ctx }) {
         </button>
       </div>
 
-      <ChoreModeOverlay ctx={ctx} data={data} setData={setData} />
+      <ChoreModeOverlay ctx={ctx} data={data} setData={setData} baseDate={baseDate} />
     </div>
   );
 }
 
 // -----------------------------
-// Overlay UI (matches old app style)
+// Overlay UI (calendar-week aware)
 // -----------------------------
-export function ChoreModeOverlay({ ctx, data, setData }) {
+export function ChoreModeOverlay({ ctx, data, setData, baseDate }) {
   const enabled = useChoreModeEnabled();
 
-  const [activeDay, setActiveDay] = useState("Monday");
+  const normalized = useMemo(() => normalizeChoresData(data), [data]);
+  const people = normalized.people || [];
+  const chores = normalized.chores || [];
 
-  const weekKey = useMemo(() => getWeekKey(new Date()), []);
-  const people = useMemo(() => normalizeChoresData(data).people, [data]);
-  const chores = useMemo(() => normalizeChoresData(data).chores, [data]);
-  const doneByWeek = data.doneByWeek || {};
+  const weekKey = useMemo(() => getWeekKey(baseDate || new Date()), [baseDate]);
+  const doneByWeek = normalized.doneByWeek || {};
   const doneMap = doneByWeek[weekKey] || {};
+
+  const [activeDay, setActiveDay] = useState(() => getDayName(baseDate || new Date()));
 
   const [newName, setNewName] = useState("");
   const [newPerson, setNewPerson] = useState(PEOPLE_DEFAULTS[0]);
   const [newPersonCustom, setNewPersonCustom] = useState("");
-  const [newDay, setNewDay] = useState("Monday");
+  const [newDay, setNewDay] = useState(() => getDayName(baseDate || new Date()));
 
-  // reset active day / week housekeeping on open
   useEffect(() => {
     if (!enabled) return;
 
-    const dayName = getDayName(new Date());
+    const dayName = getDayName(baseDate || new Date());
     setActiveDay(dayName);
     setNewDay(dayName);
 
@@ -174,15 +334,11 @@ export function ChoreModeOverlay({ ctx, data, setData }) {
         return { ...s, doneByWeek: { ...(s.doneByWeek || {}), [weekKey]: {} } };
       });
     }
-  }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [enabled, weekKey, baseDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ESC to exit
   useEffect(() => {
     if (!enabled) return;
-
-    const onKeyDown = (e) => {
-      if (e.key === "Escape") setChoreModeEnabled(false);
-    };
+    const onKeyDown = (e) => e.key === "Escape" && setChoreModeEnabled(false);
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [enabled]);
@@ -238,7 +394,6 @@ export function ChoreModeOverlay({ ctx, data, setData }) {
       const s = normalizeChoresData(prev);
       const nextChores = (s.chores || []).filter((c) => c.id !== choreId);
 
-      // Remove done marks across all weeks (keeps data clean)
       const nextDoneByWeek = { ...(s.doneByWeek || {}) };
       for (const wk of Object.keys(nextDoneByWeek)) {
         if (nextDoneByWeek[wk] && nextDoneByWeek[wk][choreId]) {
@@ -265,7 +420,6 @@ export function ChoreModeOverlay({ ctx, data, setData }) {
     <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm">
       <div className="absolute inset-0 p-4 md:p-8 overflow-auto">
         <div className="max-w-5xl mx-auto">
-          {/* Header */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
               <div className="p-3 bg-white/10 rounded-2xl">
@@ -273,7 +427,7 @@ export function ChoreModeOverlay({ ctx, data, setData }) {
               </div>
               <div>
                 <div className="text-white text-2xl font-bold">Chores</div>
-                <div className="text-white/60 text-sm">Weekly chores • checks reset each week</div>
+                <div className="text-white/60 text-sm">Weekly chores • checks for Week of {weekKey}</div>
               </div>
             </div>
 
@@ -296,7 +450,6 @@ export function ChoreModeOverlay({ ctx, data, setData }) {
             </div>
           </div>
 
-          {/* Day tabs */}
           <div className="flex flex-wrap gap-2 mb-6">
             {DAYS.map((d) => (
               <button
@@ -313,9 +466,7 @@ export function ChoreModeOverlay({ ctx, data, setData }) {
             ))}
           </div>
 
-          {/* Main grid */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* List */}
             <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
               <div className="flex items-center justify-between mb-4">
                 <div className="text-white text-xl font-semibold">{activeDay}</div>
@@ -382,7 +533,6 @@ export function ChoreModeOverlay({ ctx, data, setData }) {
               </div>
             </div>
 
-            {/* Add form */}
             <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
               <div className="text-white text-xl font-semibold mb-4">Add chore</div>
 
