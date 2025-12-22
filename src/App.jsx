@@ -295,6 +295,7 @@ export default function App() {
           onHideWindow={onHideWindow}
           onPopoutWindow={onPopoutWindow}
           onToggleSpan={onToggleSpan}
+          onOpenSettings={setModuleSettingsWinId}
         />
 
         {popupWin && popupDef && popupCtx && (
@@ -322,21 +323,27 @@ export default function App() {
           />
         )}
 
-        {moduleSettingsOpen && popupWin && popupDef?.SettingsComponent && popupCtx && (
-          <div className="fixed inset-0 z-[60] p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-            <div className="h-full w-full glass rounded-[2rem] overflow-hidden flex flex-col">
-              <div className="h-16 px-4 flex items-center justify-between">
-                <div className="font-semibold">{popupDef.title} Settings</div>
-                <button className="iconBtn" onClick={() => setModuleSettingsWinId(null)} aria-label="Close Module Settings">
-                  ✕
-                </button>
-              </div>
-              <div className="flex-1 p-4 overflow-auto">
-                <popupDef.SettingsComponent ctx={popupCtx} />
+        {moduleSettingsOpen && moduleSettingsWinId && windowsById[moduleSettingsWinId] && (() => {
+          const win = windowsById[moduleSettingsWinId];
+          const def = getModuleDef(win.moduleId);
+          const ctx = buildCtxForWindow(win);
+          if (!def?.SettingsComponent || !ctx) return null;
+          return (
+            <div className="fixed inset-0 z-[60] p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+              <div className="h-full w-full glass rounded-[2rem] overflow-hidden flex flex-col">
+                <div className="h-16 px-4 flex items-center justify-between">
+                  <div className="font-semibold">{def.title} Settings</div>
+                  <button className="iconBtn" onClick={() => setModuleSettingsWinId(null)} aria-label="Close Module Settings">
+                    ✕
+                  </button>
+                </div>
+                <div className="flex-1 p-4 overflow-auto">
+                  <def.SettingsComponent ctx={ctx} />
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
     </ErrorBoundary>
   );

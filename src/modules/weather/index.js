@@ -1,5 +1,6 @@
 import { CloudSun } from "lucide-react";
 import Module from "./module.jsx";
+import WeatherSettings from "./settings.jsx";
 import { defaultData } from "./helpers.js";
 
 export const moduleDef = {
@@ -7,6 +8,7 @@ export const moduleDef = {
   title: "Weather",
   icon: CloudSun,
   Component: Module,
+  SettingsComponent: WeatherSettings,
   defaultData,
   dependencies: [],
 };

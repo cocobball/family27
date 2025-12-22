@@ -13,6 +13,7 @@ export default function DesktopSurface({
   onHideWindow,
   onPopoutWindow,
   onToggleSpan,
+  onOpenSettings,
 }) {
   const ref = useRef(null);
   const [h, setH] = useState(600);
@@ -80,6 +81,7 @@ export default function DesktopSurface({
               onPopoutWindow={onPopoutWindow}
               onToggleSpan={onToggleSpan}
               columnHeightPx={h}
+              onOpenSettings={onOpenSettings}
             />
           </div>
         )}
@@ -98,6 +100,7 @@ export default function DesktopSurface({
               onPopoutWindow={onPopoutWindow}
               onToggleSpan={onToggleSpan}
               columnHeightPx={leftMiddleHeightPx}
+              onOpenSettings={onOpenSettings}
             />
           </div>
         </div>
@@ -116,6 +119,7 @@ export default function DesktopSurface({
               onPopoutWindow={onPopoutWindow}
               onToggleSpan={onToggleSpan}
               columnHeightPx={leftMiddleHeightPx}
+              onOpenSettings={onOpenSettings}
             />
           </div>
         </div>
@@ -133,6 +137,7 @@ export default function DesktopSurface({
             onPopoutWindow={onPopoutWindow}
             onToggleSpan={onToggleSpan}
             columnHeightPx={h}
+            onOpenSettings={onOpenSettings}
           />
         </div>
       </div>

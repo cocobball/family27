@@ -15,6 +15,7 @@ export default function Column({
   onClosePopup,
   activePopup,
   columnHeightPx,
+  onOpenSettings,
 }) {
   return (
     <div className="flex flex-col gap-3 h-full">
@@ -33,6 +34,7 @@ export default function Column({
           columnHeightPx={columnHeightPx}
           isPopup={activePopup?.id === win.id}
           onClosePopup={onClosePopup}
+          onOpenSettings={onOpenSettings}
         />
       ))}
     </div>
