@@ -8,5 +8,5 @@ export const moduleDef = {
   icon: ClipboardList,
   Component: ChoresModule,
   defaultData: defaultChoresData,
-  dependencies: ["calendar"], // optional; remove if you don't want this dependency
+  // no declared dependencies
 };

@@ -11,5 +11,5 @@ export const moduleDef = {
   Component: CalendarModule,
   SettingsComponent: CalendarSettings,
   defaultData: defaultCalendarData,
-  dependencies: ["chores"],
+  // no declared dependencies
 };

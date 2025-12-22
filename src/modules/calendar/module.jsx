@@ -29,7 +29,37 @@ import {
   todayStr,
   uid,
 } from "./helpers.js";
-import { getChoresForDateWithDone, dateFromYMD } from "../chores/helpers.js";
+
+// Local lightweight chores helpers to avoid importing the chores module and
+// keep the integration optional (read from ctx.sharedState when available).
+const CHORES_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function dateFromYMDLocal(ymd) {
+  if (!ymd || typeof ymd !== "string") return new Date();
+  const [y, m, d] = ymd.split("-").map(Number);
+  if (!y || !m || !d) return new Date();
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+function getWeekKeyLocal(d = new Date()) {
+  const date = new Date(d);
+  const day = (date.getDay() + 6) % 7; // Monday=0..Sunday=6
+  date.setDate(date.getDate() - day);
+  date.setHours(0, 0, 0, 0);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function getChoresForDateWithDoneLocal(choresData, dateOrStr) {
+  if (!choresData) return [];
+  const dateObj = typeof dateOrStr === "string" ? dateFromYMDLocal(dateOrStr) : new Date(dateOrStr);
+  const wk = getWeekKeyLocal(dateObj);
+  const doneMap = choresData.doneByWeek?.[wk] || {};
+  const dayName = CHORES_DAYS[(dateObj.getDay() + 6) % 7] || "Monday";
+  return (choresData.chores || []).filter((c) => c.day === dayName).map((c) => ({ ...c, done: !!doneMap[c.id] }));
+}
 
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
