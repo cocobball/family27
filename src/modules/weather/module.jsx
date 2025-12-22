@@ -262,7 +262,26 @@ export default function WeatherModule({ ctx }) {
   }, [daily]);
 
   return (
-    <div className="space-y-4">
+    <div className="relative overflow-hidden rounded-[1.75rem]">
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage:
+            "url('https://images.unsplash.com/photo-1502082553048-f009c37129b9?auto=format&fit=crop&w=1600')",
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          opacity: 0.18,
+        }}
+      />
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(1200px 800px at 30% 10%, rgba(255,255,255,0.10), rgba(0,0,0,0) 60%)," +
+            "linear-gradient(rgba(8,10,16,0.70), rgba(8,10,16,0.90))",
+        }}
+      />
+      <div className="relative z-10 space-y-4 p-1">
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-1">
           <div className="text-lg font-semibold flex items-center gap-2">
@@ -515,6 +534,7 @@ export default function WeatherModule({ ctx }) {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
