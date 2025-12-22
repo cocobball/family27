@@ -10,6 +10,7 @@ import {
   getDayName,
   dateFromYMD,
   groupChoresByPerson,
+  groupChoresByDay,
   getChoresForDateWithDone,
 } from "./helpers.js";
 
@@ -220,6 +221,44 @@ export default function ChoresModule({ ctx }) {
       choresWeekKey: cardModel.weekKey,
     });
   }, [ctx, viewMode, cardModel.weekKey]);
+
+  // Publish chores data and choresForSelectedDate when chores data changes
+  useEffect(() => {
+    const normalized = normalizeChoresData(data);
+    const selectedYMD = sharedGetSelectedYMD(ctx);
+    const baseDate = selectedYMD ? dateFromYMD(selectedYMD) : new Date();
+
+    const choresForSelectedDate = getChoresForDateWithDone(normalized, baseDate);
+
+    sharedSet(ctx, {
+      choresData: normalized,
+      choresPeople: normalized.people,
+      choresByDay: groupChoresByDay(normalized.chores),
+      choresForSelectedDate,
+    });
+
+    const bus = getBus(ctx);
+    bus?.emit?.("chores:changed", { data: normalized });
+    bus?.emit?.("choresForDate:changed", { selectedDate: selectedYMD, chores: choresForSelectedDate });
+  }, [data, ctx]);
+
+  // Update choresForSelectedDate when selected date changes elsewhere
+  useEffect(() => {
+    const bus = getBus(ctx);
+    const handler = (payload) => {
+      const ymd = typeof payload === "string" ? payload : payload?.date || payload?.ymd;
+      if (!ymd) return;
+
+      const normalized = normalizeChoresData(storeGet(ctx, defaultChoresData()));
+      const choresForSelectedDate = getChoresForDateWithDone(normalized, dateFromYMD(ymd));
+
+      sharedSet(ctx, { choresForSelectedDate });
+      bus?.emit?.("choresForDate:changed", { selectedDate: ymd, chores: choresForSelectedDate });
+    };
+
+    bus?.on?.("selectedDate:changed", handler);
+    return () => bus?.off?.("selectedDate:changed", handler);
+  }, [ctx]);
 
   return (
     <div className="h-full flex flex-col">

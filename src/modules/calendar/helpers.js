@@ -229,6 +229,10 @@ export function sortEventsForDay(events, prefs) {
   const fmt = prefs?.timeFormat ?? "12";
   const items = [...events];
   items.sort((a, b) => {
+    // Important events first
+    const ai = !!a.important;
+    const bi = !!b.important;
+    if (ai !== bi) return ai ? -1 : 1;
     const aAll = !!a.allDay;
     const bAll = !!b.allDay;
     if (aAll !== bAll) return aAll ? -1 : 1;

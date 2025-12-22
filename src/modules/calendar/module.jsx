@@ -29,6 +29,7 @@ import {
   todayStr,
   uid,
 } from "./helpers.js";
+import { getChoresForDateWithDone, dateFromYMD } from "../chores/helpers.js";
 
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
@@ -102,6 +103,7 @@ function EventChip({ occ, prefs, onClick }) {
       <div className="flex items-center gap-2 min-w-0">
         <div className="text-[10px] opacity-70 shrink-0">{time}</div>
         <div className="text-xs font-medium truncate">{occ.title || "(Untitled)"}</div>
+        {occ.important && <div className="text-yellow-300 text-sm ml-1">⭐</div>}
       </div>
     </button>
   );
@@ -262,6 +264,17 @@ function EventEditor({ prefs, calendars, initial, isEdit, onCancel, onSave, onDe
             onChange={(e) => setField("title", e.target.value)}
             placeholder="Soccer practice"
           />
+        </div>
+
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 text-sm opacity-80 select-none">
+            <input
+              type="checkbox"
+              checked={!!ev.important}
+              onChange={() => setField("important", !ev.important)}
+            />
+            Important
+          </label>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -472,6 +485,8 @@ export default function CalendarModule({ ctx }) {
 
   // UI settings stored IN module data (so we never overwrite the store)
   const showChores = data.ui?.showChores ?? true;
+  const showImportant = data.ui?.showImportant ?? true;
+  const choresView = data.ui?.choresView ?? "day"; // "day" | "week" | "month"
 
   // Editor modal state
   const [editor, setEditor] = useState(null);
@@ -712,34 +727,150 @@ export default function CalendarModule({ ctx }) {
         <div className="pt-3 border-t hairline" />
 
         <div className="mt-3">
-          <label className="flex items-center gap-2 text-sm opacity-80 select-none">
-            <input
-              type="checkbox"
-              checked={!!showChores}
-              onChange={(e) => patch({ ui: { ...(data.ui || {}), showChores: e.target.checked } })}
-            />
-            Show chores
-          </label>
+          <div className="flex flex-col gap-2">
+            <label className="flex items-center gap-2 text-sm opacity-80 select-none">
+              <input
+                type="checkbox"
+                checked={!!showChores}
+                onChange={(e) => patch({ ui: { ...(data.ui || {}), showChores: e.target.checked } })}
+              />
+              Show chores
+            </label>
 
-          {showChores && choresForSelectedDate.length ? (
-            <div className="mt-4 space-y-2">
-              <div className="text-sm opacity-80">Chores</div>
+            <label className="flex items-center gap-2 text-sm opacity-80 select-none">
+              <input
+                type="checkbox"
+                checked={!!showImportant}
+                onChange={(e) => patch({ ui: { ...(data.ui || {}), showImportant: e.target.checked } })}
+              />
+              Show important
+            </label>
 
-              <div className="space-y-2">
-                {choresForSelectedDate.map((c) => (
-                  <div
-                    key={c.id}
-                    className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
-                  >
-                    <div className={c.done ? "line-through opacity-70" : ""}>
-                      <span className="opacity-80">{c.person}:</span> {c.name}
-                    </div>
-                    <div className="text-xs opacity-70">{c.done ? "done" : ""}</div>
-                  </div>
-                ))}
-              </div>
+            <div className="flex items-center gap-2 text-sm">
+              <div className="text-xs opacity-70">Chores view:</div>
+              {[
+                ["day", "Day"],
+                ["week", "Week"],
+                ["month", "Month"],
+              ].map(([k, label]) => (
+                <button
+                  key={k}
+                  className={"btn !px-3 !py-2 " + (choresView === k ? "btnPrimary" : "")}
+                  onClick={() => patch({ ui: { ...(data.ui || {}), choresView: k } })}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
             </div>
-          ) : null}
+          </div>
+
+          {/* Important this month */}
+          {showImportant && (
+            (() => {
+              const items = [];
+              for (const [day, list] of Object.entries(filteredOccurrencesByDay)) {
+                if (monthStrFromDate(day) !== month) continue;
+                for (const o of list) if (o.important) items.push({ day, occ: o });
+              }
+              items.sort((a, b) => (a.day === b.day ? (a.occ.startTime || "") .localeCompare(b.occ.startTime || "") : a.day.localeCompare(b.day)));
+              return items.length ? (
+                <div className="mt-4 space-y-2">
+                  <div className="text-sm opacity-80">Important this month</div>
+                  <div className="space-y-2">
+                    {items.map(({ day, occ }) => (
+                      <div key={occ.key} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm">
+                        <div className="text-xs opacity-70">{dayLabel(day)}</div>
+                        <div className="font-medium">{occ.title}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null;
+            })()
+          )}
+
+          {/* Chores area */}
+          {showChores && (
+            (() => {
+              const sharedNow = ctx.sharedState.get?.() || {};
+              const choresData = sharedNow.choresData || null;
+
+              if (choresView === "day") {
+                return choresForSelectedDate.length ? (
+                  <div className="mt-4 space-y-2">
+                    <div className="text-sm opacity-80">Chores</div>
+                    <div className="space-y-2">
+                      {choresForSelectedDate.map((c) => (
+                        <div
+                          key={c.id}
+                          className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
+                        >
+                          <div className={c.done ? "line-through opacity-70" : ""}>
+                            <span className="opacity-80">{c.person}:</span> {c.name}
+                          </div>
+                          <div className="text-xs opacity-70">{c.done ? "done" : ""}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null;
+              }
+
+              // week or month: build grouped list
+              const days = [];
+              if (choresView === "week") {
+                // compute week start from sel and prefs.weekStart
+                const dt = new Date(sel + "T12:00:00");
+                const ws = prefs.weekStart ?? 0;
+                const dow = dt.getDay();
+                const delta = (dow - ws + 7) % 7;
+                dt.setDate(dt.getDate() - delta);
+                for (let i = 0; i < 7; i++) days.push(addDaysStr(dt.toISOString().slice(0, 10), i));
+              } else {
+                // month: use rangeStart..rangeEnd
+                if (rangeStart && rangeEnd) {
+                  let cur = rangeStart;
+                  while (cur <= rangeEnd) {
+                    days.push(cur);
+                    cur = addDaysStr(cur, 1);
+                  }
+                }
+              }
+
+              const grouped = {};
+              for (const d of days) {
+                const list = choresData ? getChoresForDateWithDone(choresData, dateFromYMD(d)) : [];
+                if (list && list.length) grouped[d] = list;
+              }
+
+              const keys = Object.keys(grouped);
+              if (!keys.length) return null;
+
+              return (
+                <div className="mt-4 space-y-2">
+                  <div className="text-sm opacity-80">Chores</div>
+                  <div className="space-y-2">
+                    {keys.map((d) => (
+                      <div key={d} className="space-y-1">
+                        <div className="text-xs opacity-70">{dayLabel(d)}</div>
+                        <div className="space-y-1">
+                          {grouped[d].map((c) => (
+                            <div key={c.id} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between">
+                              <div className={c.done ? "line-through opacity-70" : ""}>
+                                <span className="opacity-80">{c.person}:</span> {c.name}
+                              </div>
+                              <div className="text-xs opacity-70">{c.done ? "done" : ""}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()
+          )}
         </div>
 
         <div className="flex-1 overflow-auto space-y-2 mt-3">
