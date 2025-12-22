@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { ClipboardList, X, Plus, Trash2, Check } from "lucide-react";
 import {
   DAYS,
@@ -336,6 +337,16 @@ export function ChoreModeOverlay({ ctx, data, setData, baseDate }) {
     }
   }, [enabled, weekKey, baseDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Lock background scrolling when overlay is open
+  useEffect(() => {
+    if (!enabled) return;
+
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [enabled]);
+
   useEffect(() => {
     if (!enabled) return;
     const onKeyDown = (e) => e.key === "Escape" && setChoreModeEnabled(false);
@@ -416,202 +427,206 @@ export function ChoreModeOverlay({ ctx, data, setData, baseDate }) {
 
   if (!enabled) return null;
 
-  return (
+  const overlayContent = (
     <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm">
-      <div className="absolute inset-0 p-4 md:p-8 overflow-auto">
-        <div className="max-w-5xl mx-auto">
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <div className="p-3 bg-white/10 rounded-2xl">
-                <ClipboardList className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <div className="text-white text-2xl font-bold">Chores</div>
-                <div className="text-white/60 text-sm">Weekly chores • checks for Week of {weekKey}</div>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <button
-                onClick={clearChecksForWeek}
-                className="px-4 py-3 bg-white/10 rounded-xl text-white/90 hover:bg-white/20 transition-all text-sm"
-                title="Clear all checkmarks for this week"
-              >
-                Reset week
-              </button>
-
-              <button
-                className="p-3 bg-white/10 backdrop-blur-lg rounded-xl hover:bg-white/20 transition-all"
-                onClick={() => setChoreModeEnabled(false)}
-                title="Close"
-              >
-                <X className="w-6 h-6 text-white" />
-              </button>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2 mb-6">
-            {DAYS.map((d) => (
-              <button
-                key={d}
-                onClick={() => setActiveDay(d)}
-                className={`px-4 py-2 rounded-xl text-sm transition-all border ${
-                  activeDay === d
-                    ? "bg-white/20 text-white border-white/30"
-                    : "bg-white/10 text-white/80 border-white/10 hover:bg-white/15"
-                }`}
-              >
-                {d}
-              </button>
-            ))}
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-              <div className="flex items-center justify-between mb-4">
-                <div className="text-white text-xl font-semibold">{activeDay}</div>
-                <div className="text-white/50 text-sm">Week of {weekKey}</div>
-              </div>
-
-              <div className="space-y-5">
-                {todaysChores.length ? (
-                  people.map((person) => {
-                    const list = todaysChoresByPerson[person] || [];
-                    if (!list.length) return null;
-
-                    return (
-                      <div key={person} className="space-y-3">
-                        <div className="px-3 py-2 rounded-2xl bg-white/5 border border-white/10">
-                          <div className="text-white font-semibold">{person}</div>
-                        </div>
-
-                        <div className="space-y-3">
-                          {list.map((c) => {
-                            const done = !!doneMap[c.id];
-                            return (
-                              <div
-                                key={c.id}
-                                className={`flex items-center justify-between p-3 rounded-2xl transition-all ${
-                                  done ? "bg-white/5 opacity-70" : "bg-white/5 hover:bg-white/10"
-                                }`}
-                              >
-                                <div className="flex items-center gap-3 flex-1 min-w-0">
-                                  <button
-                                    onClick={() => toggleDone(c.id)}
-                                    className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
-                                      done ? "bg-green-500 border-green-500" : "border-white/40 hover:border-white/70"
-                                    }`}
-                                    title={done ? "Mark as not done" : "Mark as done"}
-                                  >
-                                    {done && <Check className="w-4 h-4 text-white" />}
-                                  </button>
-
-                                  <div className="min-w-0">
-                                    <div className={`text-white font-medium truncate ${done ? "line-through" : ""}`}>
-                                      {c.name}
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <button
-                                  onClick={() => removeChore(c.id)}
-                                  className="ml-3 p-2 rounded-lg hover:bg-white/10 transition-all text-red-200/80 hover:text-red-200"
-                                  title="Remove chore"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="text-white/40 text-center py-10">No chores for {activeDay}. Add one on the right.</div>
-                )}
-              </div>
-            </div>
-
-            <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-              <div className="text-white text-xl font-semibold mb-4">Add chore</div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="text-white/70 text-sm mb-2 block">Day</label>
-                  <select
-                    value={newDay}
-                    onChange={(e) => setNewDay(e.target.value)}
-                    className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                  >
-                    {DAYS.map((d) => (
-                      <option key={d} value={d} className="bg-slate-900 text-white">
-                        {d}
-                      </option>
-                    ))}
-                  </select>
+      <div className="h-screen overflow-auto">
+        <div className="min-h-screen flex flex-col p-4 md:p-8">
+          <div className="max-w-5xl mx-auto w-full flex-1">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-white/10 rounded-2xl">
+                  <ClipboardList className="w-6 h-6 text-white" />
                 </div>
-
                 <div>
-                  <label className="text-white/70 text-sm mb-2 block">Person</label>
-                  <select
-                    value={newPerson}
-                    onChange={(e) => setNewPerson(e.target.value)}
-                    className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                  >
-                    {people.map((p) => (
-                      <option key={p} value={p} className="bg-slate-900 text-white">
-                        {p}
-                      </option>
-                    ))}
-                    <option value="__custom__" className="bg-slate-900 text-white">
-                      Other...
-                    </option>
-                  </select>
-
-                  {newPerson === "__custom__" && (
-                    <input
-                      type="text"
-                      value={newPersonCustom}
-                      onChange={(e) => setNewPersonCustom(e.target.value)}
-                      placeholder="Type a name"
-                      className="mt-2 w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                    />
-                  )}
+                  <div className="text-white text-2xl font-bold">Chores</div>
+                  <div className="text-white/60 text-sm">Weekly chores • checks for Week of {weekKey}</div>
                 </div>
+              </div>
 
-                <div>
-                  <label className="text-white/70 text-sm mb-2 block">Chore</label>
-                  <input
-                    type="text"
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && addChore()}
-                    placeholder="e.g., Take out trash"
-                    className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                  />
-                </div>
-
+              <div className="flex items-center gap-3">
                 <button
-                  onClick={addChore}
-                  className="w-full p-3 bg-gradient-to-r from-pink-500 to-purple-500 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2"
+                  onClick={clearChecksForWeek}
+                  className="px-4 py-3 bg-white/10 rounded-xl text-white/90 hover:bg-white/20 transition-all text-sm"
+                  title="Clear all checkmarks for this week"
                 >
-                  <Plus className="w-5 h-5" />
-                  Add chore
+                  Reset week
                 </button>
 
-                <div className="text-white/40 text-xs leading-relaxed">
-                  Tip: chores repeat every week. The only thing that resets is the checkmarks.
+                <button
+                  className="p-3 bg-white/10 backdrop-blur-lg rounded-xl hover:bg-white/20 transition-all"
+                  onClick={() => setChoreModeEnabled(false)}
+                  title="Close"
+                >
+                  <X className="w-6 h-6 text-white" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 mb-6">
+              {DAYS.map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setActiveDay(d)}
+                  className={`px-4 py-2 rounded-xl text-sm transition-all border ${
+                    activeDay === d
+                      ? "bg-white/20 text-white border-white/30"
+                      : "bg-white/10 text-white/80 border-white/10 hover:bg-white/15"
+                  }`}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="text-white text-xl font-semibold">{activeDay}</div>
+                  <div className="text-white/50 text-sm">Week of {weekKey}</div>
+                </div>
+
+                <div className="space-y-5">
+                  {todaysChores.length ? (
+                    people.map((person) => {
+                      const list = todaysChoresByPerson[person] || [];
+                      if (!list.length) return null;
+
+                      return (
+                        <div key={person} className="space-y-3">
+                          <div className="px-3 py-2 rounded-2xl bg-white/5 border border-white/10">
+                            <div className="text-white font-semibold">{person}</div>
+                          </div>
+
+                          <div className="space-y-3">
+                            {list.map((c) => {
+                              const done = !!doneMap[c.id];
+                              return (
+                                <div
+                                  key={c.id}
+                                  className={`flex items-center justify-between p-3 rounded-2xl transition-all ${
+                                    done ? "bg-white/5 opacity-70" : "bg-white/5 hover:bg-white/10"
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                                    <button
+                                      onClick={() => toggleDone(c.id)}
+                                      className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
+                                        done ? "bg-green-500 border-green-500" : "border-white/40 hover:border-white/70"
+                                      }`}
+                                      title={done ? "Mark as not done" : "Mark as done"}
+                                    >
+                                      {done && <Check className="w-4 h-4 text-white" />}
+                                    </button>
+
+                                    <div className="min-w-0">
+                                      <div className={`text-white font-medium truncate ${done ? "line-through" : ""}`}>
+                                        {c.name}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    onClick={() => removeChore(c.id)}
+                                    className="ml-3 p-2 rounded-lg hover:bg-white/10 transition-all text-red-200/80 hover:text-red-200"
+                                    title="Remove chore"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="text-white/40 text-center py-10">No chores for {activeDay}. Add one on the right.</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
+                <div className="text-white text-xl font-semibold mb-4">Add chore</div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-white/70 text-sm mb-2 block">Day</label>
+                    <select
+                      value={newDay}
+                      onChange={(e) => setNewDay(e.target.value)}
+                      className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                    >
+                      {DAYS.map((d) => (
+                        <option key={d} value={d} className="bg-slate-900 text-white">
+                          {d}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-white/70 text-sm mb-2 block">Person</label>
+                    <select
+                      value={newPerson}
+                      onChange={(e) => setNewPerson(e.target.value)}
+                      className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                    >
+                      {people.map((p) => (
+                        <option key={p} value={p} className="bg-slate-900 text-white">
+                          {p}
+                        </option>
+                      ))}
+                      <option value="__custom__" className="bg-slate-900 text-white">
+                        Other...
+                      </option>
+                    </select>
+
+                    {newPerson === "__custom__" && (
+                      <input
+                        type="text"
+                        value={newPersonCustom}
+                        onChange={(e) => setNewPersonCustom(e.target.value)}
+                        placeholder="Type a name"
+                        className="mt-2 w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                      />
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="text-white/70 text-sm mb-2 block">Chore</label>
+                    <input
+                      type="text"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addChore()}
+                      placeholder="e.g., Take out trash"
+                      className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                    />
+                  </div>
+
+                  <button
+                    onClick={addChore}
+                    className="w-full p-3 bg-gradient-to-r from-pink-500 to-purple-500 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2"
+                  >
+                    <Plus className="w-5 h-5" />
+                    Add chore
+                  </button>
+
+                  <div className="text-white/40 text-xs leading-relaxed">
+                    Tip: chores repeat every week. The only thing that resets is the checkmarks.
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <div className="mt-6 text-center text-white/40 text-sm">
-            Press <span className="text-white/60">ESC</span> to exit
+            <div className="mt-6 text-center text-white/40 text-sm">
+              Press <span className="text-white/60">ESC</span> to exit
+            </div>
           </div>
         </div>
       </div>
     </div>
   );
+
+  return createPortal(overlayContent, document.body);
 }
