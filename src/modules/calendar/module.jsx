@@ -11,6 +11,7 @@ import {
   Trash2,
   Check,
   X,
+  Settings,
 } from "lucide-react";
 
 import {
@@ -58,7 +59,9 @@ function getChoresForDateWithDoneLocal(choresData, dateOrStr) {
   const wk = getWeekKeyLocal(dateObj);
   const doneMap = choresData.doneByWeek?.[wk] || {};
   const dayName = CHORES_DAYS[(dateObj.getDay() + 6) % 7] || "Monday";
-  return (choresData.chores || []).filter((c) => c.day === dayName).map((c) => ({ ...c, done: !!doneMap[c.id] }));
+  return (choresData.chores || [])
+    .filter((c) => c.day === dayName)
+    .map((c) => ({ ...c, done: !!doneMap[c.id] }));
 }
 
 // XML helpers (module-local)
@@ -287,8 +290,7 @@ function EventEditor({ prefs, calendars, initial, isEdit, onCancel, onSave, onDe
       const next = { ...base, freq, interval: Number(base.interval ?? 1) };
       if (freq === "WEEKLY") {
         const dow = new Date(s.startDate + "T12:00:00").getDay();
-        next.byWeekday =
-          Array.isArray(base.byWeekday) && base.byWeekday.length ? base.byWeekday : [dow];
+        next.byWeekday = Array.isArray(base.byWeekday) && base.byWeekday.length ? base.byWeekday : [dow];
       } else {
         delete next.byWeekday;
       }
@@ -335,11 +337,7 @@ function EventEditor({ prefs, calendars, initial, isEdit, onCancel, onSave, onDe
 
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2 text-sm opacity-80 select-none">
-            <input
-              type="checkbox"
-              checked={!!ev.important}
-              onChange={() => setField("important", !ev.important)}
-            />
+            <input type="checkbox" checked={!!ev.important} onChange={() => setField("important", !ev.important)} />
             Important
           </label>
         </div>
@@ -459,10 +457,10 @@ function EventEditor({ prefs, calendars, initial, isEdit, onCancel, onSave, onDe
                     {repeat === "daily"
                       ? "day(s)"
                       : repeat === "weekly"
-                        ? "week(s)"
-                        : repeat === "monthly"
-                          ? "month(s)"
-                          : "year(s)"}
+                      ? "week(s)"
+                      : repeat === "monthly"
+                      ? "month(s)"
+                      : "year(s)"}
                   </div>
                 </div>
               </div>
@@ -558,6 +556,9 @@ export default function CalendarModule({ ctx }) {
   // Editor modal state
   const [editor, setEditor] = useState(null);
 
+  // Settings modal state (new)
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
   useEffect(() => {
     const unsub = ctx.sharedState.subscribe((s) => {
       const nextSel = s.selectedDate || todayStr();
@@ -578,10 +579,7 @@ export default function CalendarModule({ ctx }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month]);
 
-  const { weeks, rangeStart, rangeEnd } = useMemo(
-    () => getMonthGrid(month, prefs.weekStart ?? 0),
-    [month, prefs.weekStart]
-  );
+  const { weeks, rangeStart, rangeEnd } = useMemo(() => getMonthGrid(month, prefs.weekStart ?? 0), [month, prefs.weekStart]);
 
   const occurrencesByDay = useMemo(
     () => (rangeStart && rangeEnd ? buildOccurrencesByDay(events, rangeStart, rangeEnd) : {}),
@@ -685,93 +683,104 @@ export default function CalendarModule({ ctx }) {
     fileInputRef.current?.click();
   }, []);
 
-  const handleFileChange = useCallback(async (e) => {
-    const f = e?.target?.files?.[0];
-    if (!f) return;
-    try {
-      const text = await f.text();
-      const doc = new DOMParser().parseFromString(text, "application/xml");
-      if (doc.getElementsByTagName("parsererror").length) {
-        window.alert("Import failed: invalid XML.");
-        fileInputRef.current.value = null;
-        return;
-      }
+  const handleFileChange = useCallback(
+    async (e) => {
+      const f = e?.target?.files?.[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        const doc = new DOMParser().parseFromString(text, "application/xml");
+        if (doc.getElementsByTagName("parsererror").length) {
+          window.alert("Import failed: invalid XML.");
+          if (fileInputRef.current) fileInputRef.current.value = null;
+          return;
+        }
 
-      const nodes = doc.getElementsByTagName("event");
-      const imported = [];
-      for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i];
-        const title = xmlText(node, "title") || "";
-        const calendarId = xmlText(node, "calendarId") || "family";
-        const allDay = parseBool(xmlText(node, "allDay"), false);
-        const startDate = xmlText(node, "startDate") || todayStr();
-        const endDate = xmlText(node, "endDate") || startDate;
-        let startTime = xmlText(node, "startTime");
-        let endTime = xmlText(node, "endTime");
-        if (allDay) {
-          startTime = null;
-          endTime = null;
+        const nodes = doc.getElementsByTagName("event");
+        const imported = [];
+        for (let i = 0; i < nodes.length; i++) {
+          const node = nodes[i];
+          const title = xmlText(node, "title") || "";
+          const calendarId = xmlText(node, "calendarId") || "family";
+          const allDay = parseBool(xmlText(node, "allDay"), false);
+          const startDate = xmlText(node, "startDate") || todayStr();
+          const endDate = xmlText(node, "endDate") || startDate;
+          let startTime = xmlText(node, "startTime");
+          let endTime = xmlText(node, "endTime");
+          if (allDay) {
+            startTime = null;
+            endTime = null;
+          } else {
+            startTime = startTime || "09:00";
+            endTime = endTime || "10:00";
+          }
+          const important = parseBool(xmlText(node, "important"), false);
+          const location = xmlText(node, "location") || "";
+          const notes = xmlText(node, "notes") || "";
+          const createdAt = xmlText(node, "createdAt") || new Date().toISOString();
+          const updatedAt = xmlText(node, "updatedAt") || new Date().toISOString();
+
+          // recurrence
+          const recEl = node.getElementsByTagName("recurrence")[0];
+          let recurrence = null;
+          if (recEl) {
+            const freq = xmlText(recEl, "freq");
+            const interval = parseInt(xmlText(recEl, "interval") || "1", 10) || 1;
+            const until = xmlText(recEl, "until") || null;
+            const byWeekdayStr = xmlText(recEl, "byWeekday");
+            const byWeekday = byWeekdayStr
+              ? byWeekdayStr
+                  .split(",")
+                  .map((n) => Number(n))
+                  .filter((x) => !Number.isNaN(x))
+              : null;
+            recurrence = {
+              freq: freq || "WEEKLY",
+              interval,
+              ...(until ? { until } : {}),
+              ...(byWeekday ? { byWeekday } : {}),
+            };
+          }
+
+          const ev = normalizeEvent({
+            id: uid("ev"), // always generate new id (append-only)
+            title,
+            calendarId,
+            allDay,
+            startDate,
+            endDate,
+            startTime,
+            endTime,
+            important,
+            location,
+            notes,
+            createdAt,
+            updatedAt,
+            recurrence: recurrence || null,
+          });
+
+          imported.push(ev);
+        }
+
+        if (imported.length) {
+          patch({ events: [...events, ...imported] });
+          window.alert(`Imported ${imported.length} event(s).`);
         } else {
-          startTime = startTime || "09:00";
-          endTime = endTime || "10:00";
+          window.alert("No events found to import.");
         }
-        const important = parseBool(xmlText(node, "important"), false);
-        const location = xmlText(node, "location") || "";
-        const notes = xmlText(node, "notes") || "";
-        const createdAt = xmlText(node, "createdAt") || new Date().toISOString();
-        const updatedAt = xmlText(node, "updatedAt") || new Date().toISOString();
-
-        // recurrence
-        const recEl = node.getElementsByTagName("recurrence")[0];
-        let recurrence = null;
-        if (recEl) {
-          const freq = xmlText(recEl, "freq");
-          const interval = parseInt(xmlText(recEl, "interval") || "1", 10) || 1;
-          const until = xmlText(recEl, "until") || null;
-          const byWeekdayStr = xmlText(recEl, "byWeekday");
-          const byWeekday = byWeekdayStr
-            ? byWeekdayStr.split(",").map((n) => Number(n)).filter((x) => !Number.isNaN(x))
-            : null;
-          recurrence = { freq: freq || "WEEKLY", interval, ...(until ? { until } : {}), ...(byWeekday ? { byWeekday } : {}) };
-        }
-
-        const ev = normalizeEvent({
-          id: uid("ev"), // always generate new id
-          title,
-          calendarId,
-          allDay,
-          startDate,
-          endDate,
-          startTime,
-          endTime,
-          important,
-          location,
-          notes,
-          createdAt,
-          updatedAt,
-          recurrence: recurrence || null,
-        });
-
-        imported.push(ev);
+      } catch (err) {
+        console.error(err);
+        window.alert("Import failed: " + (err && err.message ? err.message : "unknown error"));
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = null;
       }
-
-      if (imported.length) {
-        patch({ events: [...events, ...imported] });
-        window.alert(`Imported ${imported.length} event(s).`);
-      } else {
-        window.alert("No events found to import.");
-      }
-    } catch (err) {
-      console.error(err);
-      window.alert("Import failed: " + (err && err.message ? err.message : "unknown error"));
-    } finally {
-      if (fileInputRef.current) fileInputRef.current.value = null;
-    }
-  }, [events, patch]);
+    },
+    [events, patch]
+  );
 
   const handleExport = useCallback(() => {
     const rows = [];
-    rows.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<events>");
+    rows.push('<?xml version="1.0" encoding="UTF-8"?>\n<events>');
     for (const ev of events) {
       rows.push("  <event>");
       rows.push(`    <id>${escapeXml(ev.id)}</id>`);
@@ -807,6 +816,79 @@ export default function CalendarModule({ ctx }) {
   const dowLabels = useMemo(() => getDowLabels(prefs.weekStart ?? 0), [prefs.weekStart]);
   const view = prefs.view ?? "month";
 
+  const settingsModal = settingsOpen ? (
+    <ModalShell
+      title="Calendar settings"
+      onClose={() => setSettingsOpen(false)}
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <button className="btn" onClick={() => setSettingsOpen(false)} type="button">
+            <X size={16} /> Close
+          </button>
+        </div>
+      }
+    >
+      <div className="space-y-6">
+        <div className="space-y-2">
+          <div className="text-sm opacity-80 font-semibold">Display</div>
+
+          <label className="flex items-center gap-2 text-sm opacity-90 select-none">
+            <input
+              type="checkbox"
+              checked={!!showChores}
+              onChange={(e) => patch({ ui: { ...(data.ui || {}), showChores: e.target.checked } })}
+            />
+            Show chores
+          </label>
+
+          <label className="flex items-center gap-2 text-sm opacity-90 select-none">
+            <input
+              type="checkbox"
+              checked={!!showImportant}
+              onChange={(e) => patch({ ui: { ...(data.ui || {}), showImportant: e.target.checked } })}
+            />
+            Show important
+          </label>
+
+          <div className="pt-2 space-y-2">
+            <div className="text-xs opacity-70">Chores view</div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                ["day", "Day"],
+                ["week", "Week"],
+                ["month", "Month"],
+              ].map(([k, label]) => (
+                <button
+                  key={k}
+                  className={"btn !px-3 !py-2 " + (choresView === k ? "btnPrimary" : "")}
+                  onClick={() => patch({ ui: { ...(data.ui || {}), choresView: k } })}
+                  type="button"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-4 border-t hairline" />
+
+        <div className="space-y-2">
+          <div className="text-sm opacity-80 font-semibold">Import / Export</div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={handleImportClick} type="button">
+              Import XML
+            </button>
+            <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={handleExport} type="button">
+              Export XML
+            </button>
+          </div>
+          <div className="text-[11px] opacity-60">Import appends events (does not overwrite). Export downloads all events.</div>
+        </div>
+      </div>
+    </ModalShell>
+  ) : null;
+
   const main = (
     <div className={"flex-1 overflow-hidden flex " + (isWide ? "flex-row gap-3" : "flex-col gap-3")}>
       <div className="flex-1 overflow-hidden glass rounded-2xl p-3 flex flex-col">
@@ -817,6 +899,15 @@ export default function CalendarModule({ ctx }) {
             <div className="font-semibold truncate">{monthLabel(month)}</div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              className="iconBtn"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Calendar settings"
+              title="Settings"
+              type="button"
+            >
+              <Settings size={18} />
+            </button>
             <button className="iconBtn" onClick={onPrevMonth} aria-label="Previous month" type="button">
               <ChevronLeft size={18} />
             </button>
@@ -836,12 +927,6 @@ export default function CalendarModule({ ctx }) {
           <IconPill active={view === "agenda"} onClick={() => setView("agenda")} icon={List} label="Agenda" />
           <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={() => openAdd(sel)} type="button">
             <Plus size={16} /> Add
-          </button>
-          <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={handleImportClick} type="button">
-            Import XML
-          </button>
-          <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={handleExport} type="button">
-            Export XML
           </button>
         </div>
 
@@ -925,55 +1010,21 @@ export default function CalendarModule({ ctx }) {
         <div className="pt-3 border-t hairline" />
 
         <div className="mt-3">
-          <div className="flex flex-col gap-2">
-            <label className="flex items-center gap-2 text-sm opacity-80 select-none">
-              <input
-                type="checkbox"
-                checked={!!showChores}
-                onChange={(e) => patch({ ui: { ...(data.ui || {}), showChores: e.target.checked } })}
-              />
-              Show chores
-            </label>
-
-            <label className="flex items-center gap-2 text-sm opacity-80 select-none">
-              <input
-                type="checkbox"
-                checked={!!showImportant}
-                onChange={(e) => patch({ ui: { ...(data.ui || {}), showImportant: e.target.checked } })}
-              />
-              Show important
-            </label>
-
-            <div className="flex items-center gap-2 text-sm">
-              <div className="text-xs opacity-70">Chores view:</div>
-              {[
-                ["day", "Day"],
-                ["week", "Week"],
-                ["month", "Month"],
-              ].map(([k, label]) => (
-                <button
-                  key={k}
-                  className={"btn !px-3 !py-2 " + (choresView === k ? "btnPrimary" : "")}
-                  onClick={() => patch({ ui: { ...(data.ui || {}), choresView: k } })}
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-
           {/* Important this month */}
-          {showImportant && (
+          {showImportant &&
             (() => {
               const items = [];
               for (const [day, list] of Object.entries(filteredOccurrencesByDay)) {
                 if (monthStrFromDate(day) !== month) continue;
                 for (const o of list) if (o.important) items.push({ day, occ: o });
               }
-              items.sort((a, b) => (a.day === b.day ? (a.occ.startTime || "") .localeCompare(b.occ.startTime || "") : a.day.localeCompare(b.day)));
+              items.sort((a, b) =>
+                a.day === b.day
+                  ? (a.occ.startTime || "").localeCompare(b.occ.startTime || "")
+                  : a.day.localeCompare(b.day)
+              );
               return items.length ? (
-                <div className="mt-4 space-y-2">
+                <div className="space-y-2">
                   <div className="text-sm opacity-80">Important this month</div>
                   <div className="space-y-2">
                     {items.map(({ day, occ }) => (
@@ -985,11 +1036,10 @@ export default function CalendarModule({ ctx }) {
                   </div>
                 </div>
               ) : null;
-            })()
-          )}
+            })()}
 
           {/* Chores area */}
-          {showChores && (
+          {showChores &&
             (() => {
               const sharedNow = ctx.sharedState.get?.() || {};
               const choresData = sharedNow.choresData || null;
@@ -1038,7 +1088,7 @@ export default function CalendarModule({ ctx }) {
 
               const grouped = {};
               for (const d of days) {
-                const list = choresData ? getChoresForDateWithDone(choresData, dateFromYMD(d)) : [];
+                const list = choresData ? getChoresForDateWithDoneLocal(choresData, d) : [];
                 if (list && list.length) grouped[d] = list;
               }
 
@@ -1054,7 +1104,10 @@ export default function CalendarModule({ ctx }) {
                         <div className="text-xs opacity-70">{dayLabel(d)}</div>
                         <div className="space-y-1">
                           {grouped[d].map((c) => (
-                            <div key={c.id} className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between">
+                            <div
+                              key={c.id}
+                              className="rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm flex items-center justify-between"
+                            >
                               <div className={c.done ? "line-through opacity-70" : ""}>
                                 <span className="opacity-80">{c.person}:</span> {c.name}
                               </div>
@@ -1067,15 +1120,12 @@ export default function CalendarModule({ ctx }) {
                   </div>
                 </div>
               );
-            })()
-          )}
+            })()}
         </div>
 
         <div className="flex-1 overflow-auto space-y-2 mt-3">
           {filteredSelectedOccs.length ? (
-            filteredSelectedOccs.map((occ) => (
-              <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => openEdit(occ)} />
-            ))
+            filteredSelectedOccs.map((occ) => <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => openEdit(occ)} />)
           ) : (
             <div className="text-sm opacity-70">No events for this day.</div>
           )}
@@ -1091,6 +1141,8 @@ export default function CalendarModule({ ctx }) {
   return (
     <div ref={rootRef} className="h-full relative flex flex-col gap-3">
       {main}
+
+      {settingsModal}
 
       {/* hidden file input for XML import */}
       <input
@@ -1159,8 +1211,7 @@ function WeekList({ weekStartDate, prefs, occurrencesByDay, selectedDate, onSele
           <div
             key={d}
             className={
-              "rounded-2xl border border-white/10 p-3 " +
-              (d === selectedDate ? "bg-white/10" : "bg-white/5")
+              "rounded-2xl border border-white/10 p-3 " + (d === selectedDate ? "bg-white/10" : "bg-white/5")
             }
           >
             <div className="flex items-center justify-between gap-2">
@@ -1173,9 +1224,7 @@ function WeekList({ weekStartDate, prefs, occurrencesByDay, selectedDate, onSele
             </div>
             <div className="pt-2 space-y-2">
               {occs.length ? (
-                occs.map((occ) => (
-                  <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => onEdit(occ)} />
-                ))
+                occs.map((occ) => <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => onEdit(occ)} />)
               ) : (
                 <div className="text-sm opacity-70">No events.</div>
               )}
@@ -1209,8 +1258,7 @@ function AgendaRange({ startDate, endDate, prefs, occurrencesByDay, selectedDate
           <div
             key={d}
             className={
-              "rounded-2xl border border-white/10 p-3 " +
-              (d === selectedDate ? "bg-white/10" : "bg-white/5")
+              "rounded-2xl border border-white/10 p-3 " + (d === selectedDate ? "bg-white/10" : "bg-white/5")
             }
           >
             <div className="flex items-center justify-between gap-2">
@@ -1224,9 +1272,7 @@ function AgendaRange({ startDate, endDate, prefs, occurrencesByDay, selectedDate
             </div>
             {has && (
               <div className="pt-2 space-y-2">
-                {occs.map((occ) => (
-                  <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => onEdit(occ)} />
-                ))}
+                {occs.map((occ) => <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => onEdit(occ)} />)}
               </div>
             )}
           </div>
