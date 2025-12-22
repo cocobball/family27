@@ -55,7 +55,6 @@ import {
   Trash2,
   Check,
   X,
-  Settings,
 } from "lucide-react";
 
 import {
@@ -601,9 +600,6 @@ export default function CalendarModule({ ctx }) {
   // Editor modal state
   const [editor, setEditor] = useState(null);
 
-  // Settings modal state (new)
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
   useEffect(() => {
     const unsub = ctx.sharedState.subscribe((s) => {
       const nextSel = s.selectedDate || todayStr();
@@ -721,227 +717,13 @@ export default function CalendarModule({ ctx }) {
     [events, patch]
   );
 
-  // File import/export refs & handlers
-  const fileInputRef = useRef(null);
 
-  const handleImportClick = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
-
-  const handleFileChange = useCallback(
-    async (e) => {
-      const f = e?.target?.files?.[0];
-      if (!f) return;
-      try {
-        const text = await f.text();
-        const doc = new DOMParser().parseFromString(text, "application/xml");
-        if (doc.getElementsByTagName("parsererror").length) {
-          window.alert("Import failed: invalid XML.");
-          if (fileInputRef.current) fileInputRef.current.value = null;
-          return;
-        }
-
-        const nodes = doc.getElementsByTagName("event");
-        const imported = [];
-        for (let i = 0; i < nodes.length; i++) {
-          const node = nodes[i];
-          const title = xmlText(node, "title") || "";
-          const calendarId = xmlText(node, "calendarId") || "family";
-          const allDay = parseBool(xmlText(node, "allDay"), false);
-          const startDate = xmlText(node, "startDate") || todayStr();
-          const endDate = xmlText(node, "endDate") || startDate;
-          let startTime = xmlText(node, "startTime");
-          let endTime = xmlText(node, "endTime");
-          if (allDay) {
-            startTime = null;
-            endTime = null;
-          } else {
-            startTime = startTime || "09:00";
-            endTime = endTime || "10:00";
-          }
-          const important = parseBool(xmlText(node, "important"), false);
-          const location = xmlText(node, "location") || "";
-          const notes = xmlText(node, "notes") || "";
-          const createdAt = xmlText(node, "createdAt") || new Date().toISOString();
-          const updatedAt = xmlText(node, "updatedAt") || new Date().toISOString();
-
-          // recurrence
-          const recEl = node.getElementsByTagName("recurrence")[0];
-          let recurrence = null;
-          if (recEl) {
-            const freq = xmlText(recEl, "freq");
-            const interval = parseInt(xmlText(recEl, "interval") || "1", 10) || 1;
-            const until = xmlText(recEl, "until") || null;
-            const byWeekdayStr = xmlText(recEl, "byWeekday");
-            const byWeekday = byWeekdayStr
-              ? byWeekdayStr
-                  .split(",")
-                  .map((n) => Number(n))
-                  .filter((x) => !Number.isNaN(x))
-              : null;
-            recurrence = {
-              freq: freq || "WEEKLY",
-              interval,
-              ...(until ? { until } : {}),
-              ...(byWeekday ? { byWeekday } : {}),
-            };
-          }
-
-          const ev = normalizeEvent({
-            id: uid("ev"), // always generate new id (append-only)
-            title,
-            calendarId,
-            allDay,
-            startDate,
-            endDate,
-            startTime,
-            endTime,
-            important,
-            location,
-            notes,
-            createdAt,
-            updatedAt,
-            recurrence: recurrence || null,
-          });
-
-          imported.push(ev);
-        }
-
-        if (imported.length) {
-          patch({ events: [...events, ...imported] });
-          window.alert(`Imported ${imported.length} event(s).`);
-        } else {
-          window.alert("No events found to import.");
-        }
-      } catch (err) {
-        console.error(err);
-        window.alert("Import failed: " + (err && err.message ? err.message : "unknown error"));
-      } finally {
-        if (fileInputRef.current) fileInputRef.current.value = null;
-      }
-    },
-    [events, patch]
-  );
-
-  const handleExport = useCallback(() => {
-    const rows = [];
-    rows.push('<?xml version="1.0" encoding="UTF-8"?>\n<events>');
-    for (const ev of events) {
-      rows.push("  <event>");
-      rows.push(`    <id>${escapeXml(ev.id)}</id>`);
-      rows.push(`    <title>${escapeXml(ev.title)}</title>`);
-      rows.push(`    <calendarId>${escapeXml(ev.calendarId)}</calendarId>`);
-      rows.push(`    <allDay>${ev.allDay ? "true" : "false"}</allDay>`);
-      rows.push(`    <startDate>${escapeXml(ev.startDate)}</startDate>`);
-      rows.push(`    <endDate>${escapeXml(ev.endDate ?? ev.startDate)}</endDate>`);
-      rows.push(`    <startTime>${escapeXml(ev.startTime ?? "")}</startTime>`);
-      rows.push(`    <endTime>${escapeXml(ev.endTime ?? "")}</endTime>`);
-      rows.push(`    <important>${ev.important ? "true" : "false"}</important>`);
-      rows.push(`    <location>${escapeXml(ev.location ?? "")}</location>`);
-      rows.push(`    <notes>${escapeXml(ev.notes ?? "")}</notes>`);
-      rows.push(`    <createdAt>${escapeXml(ev.createdAt ?? "")}</createdAt>`);
-      rows.push(`    <updatedAt>${escapeXml(ev.updatedAt ?? "")}</updatedAt>`);
-      if (ev.recurrence) {
-        rows.push("    <recurrence>");
-        rows.push(`      <freq>${escapeXml(ev.recurrence.freq ?? "")}</freq>`);
-        rows.push(`      <interval>${String(ev.recurrence.interval ?? 1)}</interval>`);
-        rows.push(`      <until>${escapeXml(ev.recurrence.until ?? "")}</until>`);
-        const bw = Array.isArray(ev.recurrence.byWeekday) ? ev.recurrence.byWeekday.join(",") : "";
-        rows.push(`      <byWeekday>${escapeXml(bw)}</byWeekday>`);
-        rows.push("    </recurrence>");
-      }
-      rows.push("  </event>");
-    }
-    rows.push("</events>");
-    const xml = rows.join("\n");
-    safeDownloadText("family-calendar-events.xml", xml);
-  }, [events]);
 
   const dayHeader = useMemo(() => dayLabel(sel), [sel]);
   const dowLabels = useMemo(() => getDowLabels(prefs.weekStart ?? 0), [prefs.weekStart]);
   const view = prefs.view ?? "month";
 
-  const settingsModal = settingsOpen ? (
-    <ModalShell
-      title="Calendar settings"
-      onClose={() => setSettingsOpen(false)}
-      footer={
-        <div className="flex items-center justify-end gap-2">
-          <button className="btn" onClick={() => setSettingsOpen(false)} type="button">
-            <X size={16} /> Close
-          </button>
-        </div>
-      }
-    >
-      <div className="space-y-6">
-        <div className="space-y-2">
-          <div className="text-sm opacity-80 font-semibold">Display</div>
 
-          <label className="flex items-center gap-2 text-sm opacity-90 select-none">
-            <input
-              type="checkbox"
-              checked={!!showChores}
-              onChange={(e) => patch({ ui: { ...(data.ui || {}), showChores: e.target.checked } })}
-            />
-            Show chores
-          </label>
-
-          <label className="flex items-center gap-2 text-sm opacity-90 select-none">
-            <input
-              type="checkbox"
-              checked={!!showImportant}
-              onChange={(e) => patch({ ui: { ...(data.ui || {}), showImportant: e.target.checked } })}
-            />
-            Show important
-          </label>
-
-          <label className="flex items-center gap-2 text-sm opacity-90 select-none">
-            <input
-              type="checkbox"
-              checked={!!showMeals}
-              onChange={(e) => patch({ ui: { ...(data.ui || {}), showMeals: e.target.checked } })}
-            />
-            Show meals
-          </label>
-
-          <div className="pt-2 space-y-2">
-            <div className="text-xs opacity-70">Chores view</div>
-            <div className="flex flex-wrap gap-2">
-              {[
-                ["day", "Day"],
-                ["week", "Week"],
-                ["month", "Month"],
-              ].map(([k, label]) => (
-                <button
-                  key={k}
-                  className={"btn !px-3 !py-2 " + (choresView === k ? "btnPrimary" : "")}
-                  onClick={() => patch({ ui: { ...(data.ui || {}), choresView: k } })}
-                  type="button"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="pt-4 border-t hairline" />
-
-        <div className="space-y-2">
-          <div className="text-sm opacity-80 font-semibold">Import / Export</div>
-          <div className="flex flex-wrap gap-2">
-            <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={handleImportClick} type="button">
-              Import XML
-            </button>
-            <button className="btn !px-3 !py-2 inline-flex items-center gap-2" onClick={handleExport} type="button">
-              Export XML
-            </button>
-          </div>
-          <div className="text-[11px] opacity-60">Import appends events (does not overwrite). Export downloads all events.</div>
-        </div>
-      </div>
-    </ModalShell>
-  ) : null;
 
   const main = (
     <div className={"flex-1 overflow-hidden flex " + (isWide ? "flex-row gap-3" : "flex-col gap-3")}>
@@ -953,15 +735,6 @@ export default function CalendarModule({ ctx }) {
             <div className="font-semibold truncate">{monthLabel(month)}</div>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              className="iconBtn"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Calendar settings"
-              title="Settings"
-              type="button"
-            >
-              <Settings size={18} />
-            </button>
             <button className="iconBtn" onClick={onPrevMonth} aria-label="Previous month" type="button">
               <ChevronLeft size={18} />
             </button>
@@ -1403,17 +1176,6 @@ export default function CalendarModule({ ctx }) {
   return (
     <div ref={rootRef} className="h-full relative flex flex-col gap-3">
       {main}
-
-      {settingsModal}
-
-      {/* hidden file input for XML import */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".xml,text/xml,application/xml"
-        style={{ display: "none" }}
-        onChange={handleFileChange}
-      />
 
       {editor && (
         <EventEditor
