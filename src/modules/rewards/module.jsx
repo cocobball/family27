@@ -6,8 +6,8 @@ import {
   tickSessions,
   cancelSession,
   getRewardsData,
-  saveRewardsData,
-  defaultRewardsData,
+  unlockParent,
+  lockParent,
 } from "./helpers.js";
 import { unlockKid, lockKid } from "../../core/networkAdapter.js";
 
@@ -56,29 +56,20 @@ const S = {
 export default function RewardsModule({ ctx }) {
   const [, rerender] = useState(0);
 
-  // Manual credit controls (no dropdowns)
+  // Manual credit controls
   const [kidId, setKidId] = useState("harvey");
   const [currency, setCurrency] = useState("minutes");
   const [amount, setAmount] = useState(10);
   const [reason, setReason] = useState("Manual credit");
 
-  // Ensure store is initialized once
+  // Listen for events + run session ticker
   useEffect(() => {
-    const existing = ctx.store.get();
-    if (!existing || existing.version !== 1) {
-      saveRewardsData(ctx, defaultRewardsData());
-    } else {
-      // also ensure fixed kids exist
-      saveRewardsData(ctx, getRewardsData(ctx));
-    }
-    rerender((x) => x + 1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    // Listen for credits from other modules
     const offCredit = ctx.eventBus.on("REWARDS/CREDIT", (payload) => {
-      creditRewards(ctx, payload);
+      const res = creditRewards(ctx, payload);
+      if (!res.ok && res.error === "PARENT_LOCKED") {
+        // If some UI accidentally tried, don't spam alerts
+        console.warn("[REWARDS] Credit rejected (locked)");
+      }
       rerender((x) => x + 1);
     });
 
@@ -103,7 +94,6 @@ export default function RewardsModule({ ctx }) {
     }, 1000);
 
     return () => {
-      // if your eventBus doesn't return unsubscribe, these no-ops won't hurt
       try { offCredit && offCredit(); } catch {}
       try { offStart && offStart(); } catch {}
       try { offEnd && offEnd(); } catch {}
@@ -114,14 +104,37 @@ export default function RewardsModule({ ctx }) {
   const data = getRewardsData(ctx);
   const ledger = data.ledger || [];
   const sessions = data.sessions || [];
+  const parentUnlocked = (data.parent?.unlockedUntil || 0) > Date.now();
 
   return (
     <div style={{ padding: 16, color: "white" }}>
-      <h2 style={{ marginTop: 0 }}>Rewards</h2>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <h2 style={{ margin: 0 }}>Rewards</h2>
 
-      {/* Manual credit */}
-      <div style={{ ...S.card, marginBottom: 16 }}>
-        <div style={{ fontWeight: 800, marginBottom: 10 }}>Manual credit</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ fontSize: 12, opacity: 0.85 }}>
+            Parent: {parentUnlocked ? "Unlocked" : "Locked"}
+          </div>
+
+          {parentUnlocked ? (
+            <button
+              style={S.btn(false)}
+              onClick={() => {
+                lockParent(ctx);
+                rerender((x) => x + 1);
+              }}
+            >
+              Lock now
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Manual credit (parent-locked) */}
+      <div style={{ ...S.card, marginTop: 12, marginBottom: 16 }}>
+        <div style={{ fontWeight: 800, marginBottom: 10 }}>
+          Manual credit (Parent required)
+        </div>
 
         <div style={{ display: "grid", gap: 12 }}>
           <div>
@@ -171,6 +184,16 @@ export default function RewardsModule({ ctx }) {
             <button
               style={S.btn(false)}
               onClick={() => {
+                if (!parentUnlocked) {
+                  const pwd = prompt("Parent password required to add rewards:");
+                  if (!pwd) return;
+                  const ok = unlockParent(ctx, pwd, 5);
+                  if (!ok) {
+                    alert("Incorrect password");
+                    return;
+                  }
+                }
+
                 const sourceRef = `manual:${Date.now()}`;
                 ctx.eventBus.emit("REWARDS/CREDIT", {
                   kidId,
@@ -180,6 +203,7 @@ export default function RewardsModule({ ctx }) {
                   sourceRef,
                   reason,
                 });
+
                 rerender((x) => x + 1);
               }}
             >
@@ -189,7 +213,7 @@ export default function RewardsModule({ ctx }) {
         </div>
       </div>
 
-      {/* Balances */}
+      {/* Balances / Redeem (kids can use) */}
       <h3 style={{ margin: "0 0 10px 0" }}>Balances</h3>
 
       <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
