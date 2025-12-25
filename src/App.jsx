@@ -12,6 +12,15 @@ import { loadDb, saveDb, createEmptyDb, DB_KEY } from "./core/dashboardStore.js"
 import { STARTER_ENABLED, createWindowForModule, createDefaultLayout } from "./core/layoutDefaults.js";
 import { loadModules } from "./core/moduleLoader.js";
 
+// ✅ NEW: backend-backed module state (generic for all modules)
+import {
+  getCachedModule,
+  setCachedModule,
+  hasHydrated,
+  hydrateModuleFromServer,
+  saveModuleToServer,
+} from "./core/backendStore.js";
+
 function hasAnyWindows(db) {
   return !!(db?.layout?.windows && Object.keys(db.layout.windows).length);
 }
@@ -192,24 +201,88 @@ export default function App() {
       popout: () => onPopoutWindow(win.id),
       close: () => onHideWindow(win.id),
     };
+
     return {
       store: {
+        // ✅ Generic backend-backed store for ALL modules
         get: (defaultValue) => {
+          const moduleId = def.id;
+
+          // If cached (from server or local seed), return it
+          const cached = getCachedModule(moduleId);
+          if (cached != null) return cached;
+
+          // Seed from local DB (fast UI)
           const fresh = loadDb();
-          const val = fresh.modules?.[def.id];
-          if (val == null) {
-            const dv = typeof defaultValue === "function" ? defaultValue() : (defaultValue ?? { version: 1 });
-            mutateDb((d) => { d.modules[def.id] = dv; });
-            return dv;
+          const localVal = fresh.modules?.[moduleId];
+
+          if (localVal != null) {
+            setCachedModule(moduleId, localVal);
+          } else {
+            const dv =
+              typeof defaultValue === "function"
+                ? defaultValue()
+                : (defaultValue ?? { version: 1 });
+
+            mutateDb((d) => { d.modules[moduleId] = dv; });
+            setCachedModule(moduleId, dv);
           }
-          return val;
+
+          // Hydrate once from server, then update cache + local DB
+          if (!hasHydrated(moduleId)) {
+            hydrateModuleFromServer(moduleId)
+              .then((serverVal) => {
+                const isServerEmpty =
+                  !serverVal ||
+                  (typeof serverVal === "object" && Object.keys(serverVal).length === 0);
+
+                const currentLocal = loadDb().modules?.[moduleId];
+                const isLocalEmpty =
+                  currentLocal == null ||
+                  (typeof currentLocal === "object" && Object.keys(currentLocal).length === 0);
+
+                // Prefer server if it has data, or local is empty
+                const shouldUseServer = (!isServerEmpty) || isLocalEmpty;
+
+                if (shouldUseServer) {
+                  setCachedModule(moduleId, serverVal);
+                  mutateDb((d) => { d.modules[moduleId] = serverVal; });
+                }
+              })
+              .catch(() => {
+                // backend down? keep local seed
+              });
+          }
+
+          return getCachedModule(moduleId);
         },
-        set: (value) => mutateDb((d) => { d.modules[def.id] = value; }),
-        patch: (partial) => mutateDb((d) => {
-          const cur = d.modules[def.id] ?? { version: 1 };
-          d.modules[def.id] = { ...cur, ...partial };
-        }),
+
+        set: (value) => {
+          const moduleId = def.id;
+
+          // local immediate
+          mutateDb((d) => { d.modules[moduleId] = value; });
+          setCachedModule(moduleId, value);
+
+          // async push
+          saveModuleToServer(moduleId, value).catch(() => {});
+        },
+
+        patch: (partial) => {
+          const moduleId = def.id;
+
+          const fresh = loadDb();
+          const cur = fresh.modules?.[moduleId] ?? { version: 1 };
+          const next = { ...cur, ...partial };
+
+          mutateDb((d) => { d.modules[moduleId] = next; });
+          setCachedModule(moduleId, next);
+
+          // async push
+          saveModuleToServer(moduleId, next).catch(() => {});
+        },
       },
+
       eventBus,
       sharedState,
       window: { id: win.id, moduleId: def.id },
