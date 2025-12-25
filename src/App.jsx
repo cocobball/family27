@@ -29,6 +29,24 @@ function hasAnyEnabled(db) {
   return Object.values(vis).some(Boolean);
 }
 
+function pruneMissingModuleWindows(db, moduleList) {
+  const known = new Set((moduleList || []).map((m) => m.id));
+
+  // remove windows for modules we no longer have
+  const wins = db.layout.windows ?? {};
+  for (const [winId, w] of Object.entries(wins)) {
+    if (!w?.moduleId || !known.has(w.moduleId)) {
+      delete wins[winId];
+    }
+  }
+
+  // clean column orders so they don't reference deleted windows
+  const cols = db.layout.columns ?? {};
+  for (const col of Object.values(cols)) {
+    col.order = (col.order ?? []).filter((id) => !!wins[id]);
+  }
+}
+
 export default function App() {
   // Core singletons (no heavy providers)
   const eventBus = useMemo(() => createEventBus(), []);
@@ -195,6 +213,18 @@ export default function App() {
   // Build ctx per module/window
   const buildCtxForWindow = useCallback((win) => {
     const def = getModuleDef(win.moduleId);
+
+    if (!def) {
+      // Unknown module in layout (stale localStorage). Return a safe ctx.
+      return {
+        store: { get: () => ({}), set: () => {}, patch: () => {} },
+        eventBus,
+        sharedState,
+        window: { id: win.id, moduleId: win.moduleId },
+        actions: windowActions,
+      };
+    }
+
     const windowActions = {
       hide: () => onHideWindow(win.id),
       minimize: () => onMinimizeWindow(win.id),
@@ -429,6 +459,8 @@ function bootstrapDb(db, moduleList) {
   db.layout.windows ??= {};
   db.layout.moduleVisibility ??= {};
   db.modules ??= {};
+
+  pruneMissingModuleWindows(db, moduleList);
 
   // ---- Window schema migration (v1.4) ----
   // Ensure newly introduced fields exist without clobbering user choices.
