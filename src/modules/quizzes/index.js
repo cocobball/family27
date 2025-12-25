@@ -8,5 +8,5 @@ export const moduleDef = {
   icon: GraduationCap,
   Component: QuizzesModule,
   defaultData: defaultQuizzesData,
-  dependencies: ["rewards"], // requires rewards module to exist
+  dependencies: ["rewards"], // keep existing dependency
 };

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import ParentDashboard from "./ParentDashboard.jsx";
 import {
   KIDS,
   getQuizzesData,
@@ -12,6 +13,9 @@ import {
   lockParent,
   startAttempt,
   submitAttempt,
+  chooseRewardForAttempt,
+  getKidEarnedTotals,
+  rewardSummary,
 } from "./helpers.js";
 
 const S = {
@@ -58,26 +62,18 @@ function mmss(seconds) {
 export default function QuizzesModule({ ctx }) {
   const [, rerender] = useState(0);
   const [tab, setTab] = useState("kid"); // "kid" | "parent"
-
-  // Kid mode state
   const [kidId, setKidId] = useState("harvey");
-
-  // Taking quiz state
   const [taking, setTaking] = useState(null);
-  // taking: { attemptId, quiz, gradingQuestions, answers, timeLeft, result }
-
   const timerRef = useRef(null);
 
   const data = useMemo(() => getQuizzesData(ctx), [ctx, rerender]);
 
-  // clear timer on unmount
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
 
-  // ------- Parent actions (locked) -------
   const parentUnlocked = isParentUnlocked(data);
 
   function requireParent() {
@@ -93,7 +89,7 @@ export default function QuizzesModule({ ctx }) {
     return true;
   }
 
-  // ------- Import XML -------
+  // ✅ BULK IMPORT (one or many quizzes)
   async function onImportXmlFile(file) {
     const text = await file.text();
     const parsed = parseQuizXml(text);
@@ -102,31 +98,45 @@ export default function QuizzesModule({ ctx }) {
       return;
     }
 
+    const quizzes = parsed.quizzes || [];
+    if (quizzes.length === 0) {
+      alert("Import found 0 quizzes.");
+      return;
+    }
+
     const d = getQuizzesData(ctx);
-    // Upsert by id
-    const existingIdx = d.bank.findIndex(q => q.id === parsed.quiz.id);
-    if (existingIdx >= 0) d.bank[existingIdx] = parsed.quiz;
-    else d.bank.unshift(parsed.quiz);
+    let added = 0;
+    let updated = 0;
+
+    for (const quiz of quizzes) {
+      const existingIdx = d.bank.findIndex((q) => q.id === quiz.id);
+      if (existingIdx >= 0) {
+        d.bank[existingIdx] = quiz;
+        updated++;
+      } else {
+        d.bank.unshift(quiz);
+        added++;
+      }
+    }
 
     saveQuizzesData(ctx, d);
     rerender((x) => x + 1);
+
+    alert(`Imported ${quizzes.length} quiz(zes). Added: ${added}, Updated: ${updated}`);
   }
 
-  // ------- Assign -------
   function onAssign(quizId, selectedKids) {
     if (!requireParent()) return;
     assignQuizToKids(ctx, quizId, selectedKids);
     rerender((x) => x + 1);
   }
 
-  // ------- Reset/Unlock quiz for kid -------
   function onReset(quizId, kidIdToReset) {
     if (!requireParent()) return;
     resetQuizForKid(ctx, quizId, kidIdToReset);
     rerender((x) => x + 1);
   }
 
-  // ------- Kid start attempt -------
   function onStartQuiz(quizId) {
     const res = startAttempt(ctx, quizId, kidId);
     if (!res.ok) {
@@ -147,7 +157,6 @@ export default function QuizzesModule({ ctx }) {
     };
     setTaking(state);
 
-    // Start timer if timed
     if (timerRef.current) clearInterval(timerRef.current);
     if (timeLeft != null) {
       timerRef.current = setInterval(() => {
@@ -155,7 +164,6 @@ export default function QuizzesModule({ ctx }) {
           if (!prev || prev.result) return prev;
           const next = { ...prev, timeLeft: (prev.timeLeft || 0) - 1 };
           if (next.timeLeft <= 0) {
-            // auto-submit
             clearInterval(timerRef.current);
             timerRef.current = null;
             const submitted = submitAttempt(ctx, {
@@ -171,7 +179,6 @@ export default function QuizzesModule({ ctx }) {
     }
   }
 
-  // ------- Kid submit -------
   function onSubmitQuiz() {
     if (!taking || taking.result) return;
 
@@ -190,26 +197,28 @@ export default function QuizzesModule({ ctx }) {
     rerender((x) => x + 1);
   }
 
-  // ------- Render helpers -------
   const bank = data.bank || [];
   const assignments = data.assignments || [];
   const attempts = data.attempts || [];
 
   const assignedForKid = assignments
-    .filter(a => a.kidId === kidId)
-    .map(a => ({
-      ...a,
-      quiz: bank.find(q => q.id === a.quizId),
-    }))
-    .filter(x => x.quiz);
+    .filter((a) => a.kidId === kidId)
+    .map((a) => ({ ...a, quiz: bank.find((q) => q.id === a.quizId) }))
+    .filter((x) => x.quiz);
+
+  const totals = getKidEarnedTotals(data, kidId);
 
   return (
     <div style={{ padding: 16, color: "white" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <h2 style={{ margin: 0 }}>Quizzes</h2>
         <div style={{ display: "flex", gap: 8 }}>
-          <button style={S.btn(tab === "kid")} onClick={() => setTab("kid")}>Kid</button>
-          <button style={S.btn(tab === "parent")} onClick={() => setTab("parent")}>Parent</button>
+          <button style={S.btn(tab === "kid")} onClick={() => setTab("kid")}>
+            Kid
+          </button>
+          <button style={S.btn(tab === "parent")} onClick={() => setTab("parent")}>
+            Parent
+          </button>
         </div>
       </div>
 
@@ -219,9 +228,23 @@ export default function QuizzesModule({ ctx }) {
             <>
               <div style={{ ...S.card, marginBottom: 12 }}>
                 <div style={S.label}>Who is taking the quiz?</div>
-                <div style={{ display: "flex", gap: 10 }}>
-                  <button style={S.btn(kidId === "harvey")} onClick={() => setKidId("harvey")}>Harvey</button>
-                  <button style={S.btn(kidId === "brady")} onClick={() => setKidId("brady")}>Brady</button>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {KIDS.map((k) => (
+                    <button key={k.id} style={S.btn(kidId === k.id)} onClick={() => setKidId(k.id)}>
+                      {k.name}
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ marginTop: 10, display: "flex", gap: 14, flexWrap: "wrap", opacity: 0.95 }}>
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>Game Time earned</div>
+                    <div style={{ fontWeight: 900, fontSize: 18 }}>{totals.minutes} min</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, opacity: 0.8 }}>$ earned</div>
+                    <div style={{ fontWeight: 900, fontSize: 18 }}>${totals.points}</div>
+                  </div>
                 </div>
               </div>
 
@@ -240,16 +263,13 @@ export default function QuizzesModule({ ctx }) {
                         <div style={{ opacity: 0.9, marginTop: 4 }}>{q.description}</div>
 
                         <div style={{ marginTop: 8, fontSize: 13, opacity: 0.9 }}>
-                          Pass: {q.passPercent}% • Reward: {q.reward.amount} {q.reward.currency}
+                          {q.category ? `Category: ${q.category} • ` : ""}
+                          Pass: {q.passPercent}% • Reward: {rewardSummary(q)}
                           {q.timeLimitSeconds != null ? ` • Time: ${q.timeLimitSeconds}s` : " • Untimed"}
                         </div>
 
                         <div style={{ marginTop: 10 }}>
-                          <button
-                            style={S.btn(false)}
-                            disabled={!available}
-                            onClick={() => onStartQuiz(a.quizId)}
-                          >
+                          <button style={S.btn(false)} disabled={!available} onClick={() => onStartQuiz(a.quizId)}>
                             {available ? "Start quiz" : "Completed (Ask parent to unlock)"}
                           </button>
                         </div>
@@ -266,6 +286,9 @@ export default function QuizzesModule({ ctx }) {
                   <div>
                     <div style={{ fontWeight: 900, fontSize: 18 }}>{taking.quiz.title}</div>
                     <div style={{ opacity: 0.9, marginTop: 4 }}>{taking.quiz.description}</div>
+                    {taking.quiz.category ? (
+                      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>Category: {taking.quiz.category}</div>
+                    ) : null}
                   </div>
                   {taking.timeLeft != null && (
                     <div style={{ textAlign: "right" }}>
@@ -286,16 +309,46 @@ export default function QuizzesModule({ ctx }) {
                       <div style={{ marginTop: 6 }}>
                         Score: <b>{taking.result.scorePercent}%</b>
                       </div>
-                      <div style={{ marginTop: 6 }}>
-                        {taking.result.passed
-                          ? `Reward: ${taking.quiz.reward.amount} ${taking.quiz.reward.currency} (added to Rewards)`
-                          : "No reward awarded."}
-                      </div>
 
-                      <button
-                        style={{ ...S.btn(false), marginTop: 12 }}
-                        onClick={() => setTaking(null)}
-                      >
+                      {taking.result.passed && taking.result.needsChoice ? (
+                        <>
+                          <div style={{ marginTop: 10, opacity: 0.9 }}>Pick your reward:</div>
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+                            {taking.result.choiceOptions?.points > 0 && (
+                              <button
+                                style={S.btn(false)}
+                                onClick={() => {
+                                  const r = chooseRewardForAttempt(ctx, taking.attemptId, "points");
+                                  if (!r.ok) return alert(r.error);
+                                  setTaking((p) => ({ ...p, result: { ...p.result, needsChoice: false } }));
+                                  rerender((x) => x + 1);
+                                }}
+                              >
+                                Take ${taking.result.choiceOptions.points}
+                              </button>
+                            )}
+                            {taking.result.choiceOptions?.minutes > 0 && (
+                              <button
+                                style={S.btn(false)}
+                                onClick={() => {
+                                  const r = chooseRewardForAttempt(ctx, taking.attemptId, "minutes");
+                                  if (!r.ok) return alert(r.error);
+                                  setTaking((p) => ({ ...p, result: { ...p.result, needsChoice: false } }));
+                                  rerender((x) => x + 1);
+                                }}
+                              >
+                                Take {taking.result.choiceOptions.minutes} min
+                              </button>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ marginTop: 6 }}>
+                          {taking.result.passed ? "Reward added to Rewards." : "No reward awarded."}
+                        </div>
+                      )}
+
+                      <button style={{ ...S.btn(false), marginTop: 12 }} onClick={() => setTaking(null)}>
                         Back to list
                       </button>
                     </>
@@ -313,7 +366,9 @@ export default function QuizzesModule({ ctx }) {
                 <>
                   {taking.quiz.questions.map((q, idx) => (
                     <div key={q.id} style={S.card}>
-                      <div style={{ fontWeight: 800 }}>{idx + 1}. {q.prompt}</div>
+                      <div style={{ fontWeight: 800 }}>
+                        {idx + 1}. {q.prompt}
+                      </div>
                       <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
                         {q.choices.map((c, ci) => {
                           const selected = taking.answers[q.id] === ci;
@@ -363,9 +418,7 @@ export default function QuizzesModule({ ctx }) {
           <div style={{ ...S.card, marginBottom: 12 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
               <div style={{ fontWeight: 900 }}>Parent dashboard</div>
-              <div style={{ opacity: 0.85 }}>
-                Status: {parentUnlocked ? "Unlocked" : "Locked"}
-              </div>
+              <div style={{ opacity: 0.85 }}>Status: {parentUnlocked ? "Unlocked" : "Locked"}</div>
             </div>
 
             <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -393,102 +446,24 @@ export default function QuizzesModule({ ctx }) {
                   Lock now
                 </button>
               )}
-
-              <label style={{ ...S.btn(false), display: "inline-block" }}>
-                Import XML
-                <input
-                  type="file"
-                  accept=".xml,text/xml"
-                  style={{ display: "none" }}
-                  onChange={(e) => {
-                    if (!requireParent()) return;
-                    const file = e.target.files?.[0];
-                    if (file) onImportXmlFile(file);
-                    e.target.value = "";
-                  }}
-                />
-              </label>
             </div>
           </div>
 
           {!parentUnlocked ? (
             <div style={{ opacity: 0.85 }}>Unlock to manage quizzes.</div>
           ) : (
-            <>
-              <h3 style={{ margin: "0 0 10px 0" }}>Quiz Bank</h3>
-              {bank.length === 0 ? (
-                <div style={{ opacity: 0.85 }}>No quizzes imported yet.</div>
-              ) : (
-                <div style={{ display: "grid", gap: 10 }}>
-                  {bank.map((q) => (
-                    <div key={q.id} style={S.card}>
-                      <div style={{ fontWeight: 900, fontSize: 16 }}>{q.title}</div>
-                      <div style={{ opacity: 0.9, marginTop: 4 }}>{q.description}</div>
-
-                      <div style={{ marginTop: 8, fontSize: 13, opacity: 0.9 }}>
-                        Pass: {q.passPercent}% • Reward: {q.reward.amount} {q.reward.currency}
-                        {q.timeLimitSeconds != null ? ` • Time: ${q.timeLimitSeconds}s` : " • Untimed"}
-                        • Questions: {q.questions.length}
-                      </div>
-
-                      <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <button style={S.btn(false)} onClick={() => onAssign(q.id, ["harvey"])}>
-                          Assign → Harvey
-                        </button>
-                        <button style={S.btn(false)} onClick={() => onAssign(q.id, ["brady"])}>
-                          Assign → Brady
-                        </button>
-                        <button style={S.btn(false)} onClick={() => onAssign(q.id, ["harvey", "brady"])}>
-                          Assign → Both
-                        </button>
-                      </div>
-
-                      <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                        <div style={{ fontWeight: 800, opacity: 0.9 }}>Unlock/Reset for kid</div>
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          <button style={S.btn(false)} onClick={() => onReset(q.id, "harvey")}>
-                            Reset Harvey
-                          </button>
-                          <button style={S.btn(false)} onClick={() => onReset(q.id, "brady")}>
-                            Reset Brady
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <h3 style={{ margin: "16px 0 10px 0" }}>Attempts (history)</h3>
-              {attempts.length === 0 ? (
-                <div style={{ opacity: 0.85 }}>No attempts yet.</div>
-              ) : (
-                <div style={{ display: "grid", gap: 8 }}>
-                  {attempts
-                    .slice()
-                    .sort((a, b) => (b.submittedAt || b.startedAt).localeCompare(a.submittedAt || a.startedAt))
-                    .slice(0, 50)
-                    .map((a) => {
-                      const quiz = bank.find(q => q.id === a.quizId);
-                      return (
-                        <div key={a.id} style={S.card}>
-                          <div style={{ fontSize: 12, opacity: 0.8 }}>
-                            {new Date(a.startedAt).toLocaleString()} • {a.kidId} • {quiz ? quiz.title : a.quizId}
-                          </div>
-                          <div style={{ marginTop: 4 }}>
-                            Result:{" "}
-                            {a.submittedAt
-                              ? (a.passed ? "✅ Pass" : "❌ Fail")
-                              : "In progress"}{" "}
-                            {a.scorePercent != null ? `• ${a.scorePercent}%` : ""}{" "}
-                            {a.awarded ? "• Rewarded" : ""}
-                          </div>
-                        </div>
-                      );
-                    })}
-                </div>
-              )}
-            </>
+            <ParentDashboard
+              ctx={ctx}
+              data={data}
+              bank={bank}
+              assignments={assignments}
+              attempts={attempts}
+              onRerender={() => rerender((x) => x + 1)}
+              onImportXmlFile={onImportXmlFile}
+              requireParent={requireParent}
+              onAssign={onAssign}
+              onReset={onReset}
+            />
           )}
         </div>
       )}
