@@ -38,12 +38,12 @@ export default function WindowFrame({
   function onHeaderPointerDown(e) {
     // Don't start drag on interactive elements
     const interactive = e.target?.closest?.(
-      "button, a, input, select, textarea, [role='button'], [data-no-drag]"
+      'input, textarea, select, button, a, [contenteditable="true"], [data-no-drag]'
     );
     if (interactive) return;
 
-    e.preventDefault();
-    e.currentTarget.setPointerCapture?.(e.pointerId);
+    // DON'T preventDefault yet - let the touch system handle focus
+    // Capture will be set only when drag activates
 
     // Initialize drag state with activation constraints
     dragStateRef.current = {
@@ -52,11 +52,14 @@ export default function WindowFrame({
       startY: e.clientY,
       startTime: Date.now(),
       activated: false,
+      target: e.currentTarget,
       longPressTimer: setTimeout(() => {
         // Long press activation (200ms)
         if (dragStateRef.current && !dragStateRef.current.activated) {
           dragStateRef.current.activated = true;
           setDragActive(true);
+          // Now that drag is active, prevent default and capture
+          dragStateRef.current.target?.setPointerCapture?.(dragStateRef.current.pointerId);
         }
       }, 200),
     };
@@ -78,13 +81,17 @@ export default function WindowFrame({
         clearTimeout(state.longPressTimer);
         state.activated = true;
         setDragActive(true);
+        // Prevent default and capture pointer now that drag is active
+        e.preventDefault();
+        state.target?.setPointerCapture?.(state.pointerId);
       } else {
         // Not activated yet, don't process movement
         return;
       }
     }
 
-    // Drag is active - calculate target column
+    // Drag is active - prevent default and calculate target column
+    e.preventDefault();
     const x = e.clientX;
     const w = window.innerWidth;
     const target = x < w / 3 ? "left" : x < (2 * w) / 3 ? "middle" : "right";
@@ -104,10 +111,10 @@ export default function WindowFrame({
       onMoveWindow(win.id, previewColumn);
     }
 
-    // Clean up
-    if (e.currentTarget?.releasePointerCapture) {
+    // Clean up - only release if we actually captured
+    if (state.activated && state.target?.releasePointerCapture) {
       try {
-        e.currentTarget.releasePointerCapture(state.pointerId);
+        state.target.releasePointerCapture(state.pointerId);
       } catch {}
     }
 
@@ -119,11 +126,13 @@ export default function WindowFrame({
   function onHeaderPointerCancel(e) {
     if (!dragStateRef.current) return;
 
-    clearTimeout(dragStateRef.current.longPressTimer);
+    const state = dragStateRef.current;
+    clearTimeout(state.longPressTimer);
     
-    if (e.currentTarget?.releasePointerCapture) {
+    // Only release if we actually captured
+    if (state.activated && state.target?.releasePointerCapture) {
       try {
-        e.currentTarget.releasePointerCapture(dragStateRef.current.pointerId);
+        state.target.releasePointerCapture(state.pointerId);
       } catch {}
     }
 
@@ -240,7 +249,7 @@ export default function WindowFrame({
           </div>
         </div>
       </div>
-
+windowBody 
       {!win.minimized && (
         <div className="h-[calc(100%-4rem)] p-4" style={{ touchAction: 'auto' }}>
           <div className="h-full rounded-2xl" style={{ background: "rgba(0,0,0,0.12)", border: "1px solid var(--border)" }}>

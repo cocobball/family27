@@ -57,3 +57,11 @@ body {
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
+
+/* Ensure inputs in window body are touch-focusable */
+.windowBody input,
+.windowBody textarea,
+.windowBody select,
+.windowBody [contenteditable="true"] {
+  touch-action: auto;
+}
