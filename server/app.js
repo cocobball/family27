@@ -1,21 +1,12 @@
 import express from "express";
 import multer from "multer";
 import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
 import storage from "./storage/index.js";
 
 const app = express();
 
-// ----- Paths -----
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 // Use shared storage module (DATA_DIR / UPLOAD_DIR come from env on the Pi)
-const DATA_DIR = storage.getDataDir();
 const UPLOADS_DIR = storage.getUploadDir();
-const STATE_DIR = storage.resolveDataPath("module_state");
-
 
 // ----- Middleware -----
 app.use(express.json({ limit: "10mb" }));
@@ -35,56 +26,57 @@ function safeModuleId(id) {
   return clean;
 }
 
-function stateFileFor(moduleId) {
-  return storage.resolveDataPath(`module_state/${moduleId}.json`);
+function makeId() {
+  return Math.random().toString(36).slice(2, 10) + "-" + Date.now().toString(36);
 }
 
-
-function readModuleState(moduleId) {
-  const file = stateFileFor(moduleId);
-  try {
-    const raw = fs.readFileSync(file, "utf8");
-    const parsed = JSON.parse(raw);
-    return {
-      state: parsed?.state ?? {},
-      updated_at: parsed?.updated_at ?? null,
-    };
-  } catch {
-    return { state: {}, updated_at: null };
-  }
+function stateRelPathFor(moduleId) {
+  return `module_state/${moduleId}.json`;
 }
 
-function writeModuleState(moduleId, stateObj) {
+async function readModuleState(moduleId) {
+  const rel = stateRelPathFor(moduleId);
+
+  // Legacy-aware read (checks canonical first, then LEGACY_DATA_DIRS if configured)
+  const filePath = await storage.findExistingDataPath(rel);
+
+  const parsed = await storage.readJson(filePath, { fallback: null });
+  if (!parsed) return { state: {}, updated_at: null };
+
+  return {
+    state: parsed?.state ?? {},
+    updated_at: parsed?.updated_at ?? null,
+  };
+}
+
+async function writeModuleState(moduleId, stateObj) {
   const now = new Date().toISOString();
-  const file = stateFileFor(moduleId);
+  const rel = stateRelPathFor(moduleId);
+  const filePath = storage.resolveDataPath(rel);
+
   const payload = {
     module: moduleId,
     state: stateObj ?? {},
     updated_at: now,
   };
-  fs.writeFileSync(file, JSON.stringify(payload, null, 2), "utf8");
+
+  await storage.writeJsonAtomic(filePath, payload);
   return payload;
 }
 
-function uploadsIndexFile() {
-  return storage.resolveDataPath("uploads_index.json");
+function uploadsIndexRelPath() {
+  return "uploads_index.json";
 }
 
-
-function readUploadsIndex() {
-  try {
-    return JSON.parse(fs.readFileSync(uploadsIndexFile(), "utf8"));
-  } catch {
-    return [];
-  }
+async function readUploadsIndex() {
+  const rel = uploadsIndexRelPath();
+  const filePath = await storage.findExistingDataPath(rel);
+  return await storage.readJson(filePath, { fallback: [] });
 }
 
-function writeUploadsIndex(list) {
-  fs.writeFileSync(uploadsIndexFile(), JSON.stringify(list, null, 2), "utf8");
-}
-
-function makeId() {
-  return Math.random().toString(36).slice(2, 10) + "-" + Date.now().toString(36);
+async function writeUploadsIndex(list) {
+  const filePath = storage.resolveDataPath(uploadsIndexRelPath());
+  await storage.writeJsonAtomic(filePath, list ?? []);
 }
 
 // ----- Health -----
@@ -93,15 +85,15 @@ app.get("/api/v1/health", (req, res) => {
 });
 
 // ----- Module state -----
-app.get("/api/v1/modules/:module/state", (req, res) => {
+app.get("/api/v1/modules/:module/state", async (req, res) => {
   const moduleId = safeModuleId(req.params.module);
   if (!moduleId) return res.status(400).json({ ok: false, error: "bad module id" });
 
-  const { state, updated_at } = readModuleState(moduleId);
+  const { state, updated_at } = await readModuleState(moduleId);
   res.json({ module: moduleId, state, updated_at });
 });
 
-app.put("/api/v1/modules/:module/state", (req, res) => {
+app.put("/api/v1/modules/:module/state", async (req, res) => {
   const moduleId = safeModuleId(req.params.module);
   if (!moduleId) return res.status(400).json({ ok: false, error: "bad module id" });
 
@@ -110,21 +102,21 @@ app.put("/api/v1/modules/:module/state", (req, res) => {
     return res.status(400).json({ ok: false, error: "body must be JSON object" });
   }
 
-  writeModuleState(moduleId, body);
-  res.json({ ok: true, module: moduleId, updated_at: readModuleState(moduleId).updated_at });
+  const payload = await writeModuleState(moduleId, body);
+  res.json({ ok: true, module: moduleId, updated_at: payload.updated_at });
 });
 
 // ----- Uploads -----
-const storage = multer.diskStorage({
+const multerStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname || "") || ".bin";
     cb(null, `${makeId()}${ext}`);
   },
 });
-const upload = multer({ storage });
+const upload = multer({ storage: multerStorage });
 
-app.post("/api/v1/uploads", upload.single("file"), (req, res) => {
+app.post("/api/v1/uploads", upload.single("file"), async (req, res) => {
   const moduleId = safeModuleId(req.body?.module) || "unknown";
   const item_id = req.body?.item_id ?? null;
 
@@ -142,16 +134,16 @@ app.post("/api/v1/uploads", upload.single("file"), (req, res) => {
     created_at: new Date().toISOString(),
   };
 
-  const index = readUploadsIndex();
+  const index = await readUploadsIndex();
   index.unshift(record);
-  writeUploadsIndex(index);
+  await writeUploadsIndex(index);
 
   res.json(record);
 });
 
-app.get("/api/v1/uploads", (req, res) => {
+app.get("/api/v1/uploads", async (req, res) => {
   const moduleId = safeModuleId(req.query?.module) || null;
-  const index = readUploadsIndex();
+  const index = await readUploadsIndex();
   const filtered = moduleId ? index.filter((x) => x.module === moduleId) : index;
   res.json(filtered);
 });

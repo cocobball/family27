@@ -97,6 +97,9 @@ export async function ensureDirs() {
   await ensureDir(path.join(dataDir, "cache"));
   await ensureDir(path.join(dataDir, "tmp"));
 
+  // ✅ REQUIRED for module state (calendar/events/rewards/etc)
+  await ensureDir(path.join(dataDir, "module_state"));
+
   debug("ensureDirs OK", { dataDir, uploadDir });
   return { dataDir, uploadDir };
 }
