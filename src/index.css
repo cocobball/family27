@@ -50,3 +50,10 @@ body {
 .iconBtn:active { transform: translateY(1px); }
 
 .hairline { border-color: var(--border); }
+/* Touch-optimized drag handle */
+.drag-handle {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
