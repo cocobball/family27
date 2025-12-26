@@ -3,6 +3,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import storage from "./storage/index.js";
 
 const app = express();
 
@@ -10,14 +11,11 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// repo root = /opt/family-dashboard
-const ROOT = path.resolve(__dirname, "..");
-const DATA_DIR = path.join(ROOT, "data");
-const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
-const STATE_DIR = path.join(DATA_DIR, "module_state");
+// Use shared storage module (DATA_DIR / UPLOAD_DIR come from env on the Pi)
+const DATA_DIR = storage.getDataDir();
+const UPLOADS_DIR = storage.getUploadDir();
+const STATE_DIR = storage.resolveDataPath("module_state");
 
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-fs.mkdirSync(STATE_DIR, { recursive: true });
 
 // ----- Middleware -----
 app.use(express.json({ limit: "10mb" }));
@@ -38,8 +36,9 @@ function safeModuleId(id) {
 }
 
 function stateFileFor(moduleId) {
-  return path.join(STATE_DIR, `${moduleId}.json`);
+  return storage.resolveDataPath(`module_state/${moduleId}.json`);
 }
+
 
 function readModuleState(moduleId) {
   const file = stateFileFor(moduleId);
@@ -68,8 +67,9 @@ function writeModuleState(moduleId, stateObj) {
 }
 
 function uploadsIndexFile() {
-  return path.join(DATA_DIR, "uploads_index.json");
+  return storage.resolveDataPath("uploads_index.json");
 }
+
 
 function readUploadsIndex() {
   try {
