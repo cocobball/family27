@@ -549,11 +549,16 @@ export default function PhotosSettings({ ctx }) {
             <select
               value={s.fit}
               onChange={(e) => saveSettings({ fit: e.target.value })}
-              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-white [&>option]:bg-gray-900 [&>option]:text-white"
             >
               <option value="cover">Cover (fill screen)</option>
               <option value="contain">Contain (no crop)</option>
+              <option value="auto">Auto (smart fit per image)</option>
+              <option value="scale-down">Scale-down (no upscale)</option>
             </select>
+            <div className="text-[11px] opacity-60">
+              Auto: chooses cover or contain based on image aspect ratio vs screen
+            </div>
           </div>
 
           <div className="space-y-1">

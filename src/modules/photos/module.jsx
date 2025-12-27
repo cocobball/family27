@@ -419,8 +419,30 @@ function ScreensaverOverlay({
   const [current, setCurrent] = useState(src || null);
   const [next, setNext] = useState(null);
   const [showNext, setShowNext] = useState(false);
+  const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
 
-  const fitClass = fit === "contain" ? "object-contain" : "object-cover";
+  // Compute effective fit mode based on settings and image dimensions
+  const effectiveFit = useMemo(() => {
+    if (!fit) return "cover";
+    if (fit === "scale-down") return "scale-down";
+    if (fit !== "auto") return fit;
+
+    // Auto mode: intelligently choose based on aspect ratio mismatch
+    const viewRatio = window.innerWidth / window.innerHeight;
+    const imgRatio = imageDimensions.width / imageDimensions.height;
+
+    if (!imgRatio || !viewRatio) return "cover";
+
+    // If ratio mismatch is significant (>15%), use contain; otherwise cover
+    const shouldContain = imgRatio < viewRatio * 0.85 || imgRatio > viewRatio * 1.15;
+    return shouldContain ? "contain" : "cover";
+  }, [fit, imageDimensions]);
+
+  const fitClass = effectiveFit === "contain" 
+    ? "object-contain" 
+    : effectiveFit === "scale-down"
+    ? "object-scale-down"
+    : "object-cover";
 
   // Clock tick
   useEffect(() => {
@@ -451,6 +473,12 @@ function ScreensaverOverlay({
     // First paint
     if (!current) {
       setCurrent(src);
+      // Load dimensions for auto fit
+      const img = new Image();
+      img.onload = () => {
+        setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight });
+      };
+      img.src = src;
       return;
     }
 
@@ -460,6 +488,10 @@ function ScreensaverOverlay({
     const img = new Image();
     img.onload = () => {
       if (!alive) return;
+      
+      // Update dimensions for auto fit mode
+      setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight });
+      
       setNext(src);
       requestAnimationFrame(() => setShowNext(true));
 
