@@ -328,6 +328,9 @@ app.get("/api/v1/photos/local/file", async (req, res) => {
   }
 });
 
+// DISABLED: Folder browsing not supported. Only /api/v1/photos/local/list is used
+// with hardcoded directory /opt/shared/photos/memories-1
+/*
 app.get("/api/v1/photos/local/folders", async (req, res) => {
   try {
     const requestedPath = req.query?.path;
@@ -373,6 +376,7 @@ app.get("/api/v1/photos/local/folders", async (req, res) => {
     res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
+*/
 
 // ----- Listen -----
 const PORT = Number(process.env.PORT || 3000);

@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { defaultPhotosData, migratePhotosData, DEMO_SETS, isLikelyImagePath } from "./helpers.js";
 
+const LOCAL_PHOTOS_DIR = "/opt/shared/photos/memories-1";
+
 // --- ctx compatibility ---
 function storeGet(ctx, fallback) {
   const s = ctx.store;
@@ -89,7 +91,6 @@ export default function PhotosSettings({ ctx }) {
 
   const [busy, setBusy] = useState(false);
   const [folderTestResult, setFolderTestResult] = useState("");
-  const [selectedFolderName, setSelectedFolderName] = useState("");
 
   function saveSettings(patch) {
     storeSet(ctx, {
@@ -167,26 +168,20 @@ export default function PhotosSettings({ ctx }) {
   }
 
   async function onLoadLocalNow() {
-    const localPath = String(s.localFolderPath || "").trim();
-    if (!localPath) {
-      setFolderTestResult("Enter a local folder path first.");
-      return;
-    }
-
     setBusy(true);
     setFolderTestResult("");
     try {
       const response = await fetch("/api/v1/photos/local/list", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: localPath }),
+        body: JSON.stringify({ path: LOCAL_PHOTOS_DIR }),
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         const errorMsg = errorData?.error || `Request failed (${response.status})`;
         setFolderCache({ lastError: errorMsg, fetchedAt: new Date().toISOString() });
-        setFolderTestResult(errorMsg);
+        setFolderTestResult(`Error: ${errorMsg}`);
         return;
       }
 
@@ -204,41 +199,10 @@ export default function PhotosSettings({ ctx }) {
     } catch (e) {
       const msg = String(e?.message || e);
       setFolderCache({ lastError: msg, fetchedAt: new Date().toISOString() });
-      setFolderTestResult(msg);
+      setFolderTestResult(`Error: ${msg}`);
     } finally {
       setBusy(false);
     }
-  }
-
-  function onPickLocalFolder(e) {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    // Get the first file and extract the relative path
-    const firstFile = files[0];
-    const relativePath = firstFile.webkitRelativePath || "";
-    
-    if (!relativePath) {
-      setFolderTestResult("Unable to determine folder name.");
-      return;
-    }
-
-    // Extract top-level folder name (part before first /)
-    const folderName = relativePath.split("/")[0];
-    
-    if (!folderName) {
-      setFolderTestResult("Unable to determine folder name.");
-      return;
-    }
-
-    // Set the path automatically
-    const fullPath = `/opt/shared/photos/${folderName}`;
-    saveSettings({ localFolderPath: fullPath });
-    setSelectedFolderName(folderName);
-    setFolderTestResult("");
-    
-    // Reset the input
-    e.target.value = "";
   }
 
   const demoNames = Object.keys(DEMO_SETS);
@@ -313,7 +277,7 @@ export default function PhotosSettings({ ctx }) {
             <select
               value={s.source}
               onChange={(e) => saveSettings({ source: e.target.value })}
-              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-white [&>option]:bg-gray-900 [&>option]:text-white"
             >
               <option value="demo">Demo</option>
               <option value="uploaded">Uploaded</option>
@@ -327,7 +291,7 @@ export default function PhotosSettings({ ctx }) {
             <select
               value={s.demoSet}
               onChange={(e) => saveSettings({ demoSet: e.target.value })}
-              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-white [&>option]:bg-gray-900 [&>option]:text-white"
               disabled={s.source !== "demo"}
             >
               {demoNames.map((name) => (
@@ -340,38 +304,9 @@ export default function PhotosSettings({ ctx }) {
         {s.source === "local" ? (
           <div className="mt-3 space-y-2">
             <div className="text-xs opacity-70">Local folder path</div>
-            <input
-              value={s.localFolderPath}
-              onChange={(e) => saveSettings({ localFolderPath: e.target.value })}
-              placeholder="/opt/shared/photos/memories-1"
-              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
-            />
-
-            <div className="flex items-center gap-2 flex-wrap">
-              <input
-                type="file"
-                webkitdirectory=""
-                directory=""
-                multiple
-                onChange={onPickLocalFolder}
-                style={{ display: "none" }}
-                id="local-folder-picker"
-              />
-              <button
-                className="btn"
-                onClick={() => document.getElementById("local-folder-picker")?.click()}
-                type="button"
-                disabled={busy}
-              >
-                Choose folder…
-              </button>
+            <div className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm opacity-80 font-mono">
+              {LOCAL_PHOTOS_DIR}
             </div>
-
-            {selectedFolderName ? (
-              <div className="text-xs opacity-80 bg-white/5 rounded-lg px-3 py-2">
-                Selected: <span className="font-semibold">{selectedFolderName}</span> → <span className="font-mono">/opt/shared/photos/{selectedFolderName}</span>
-              </div>
-            ) : null}
 
             <div className="text-[11px] opacity-70 leading-relaxed">
               This is the full path to a folder on the Pi's filesystem. The backend service will scan it for images.
@@ -388,7 +323,15 @@ export default function PhotosSettings({ ctx }) {
               </button>
             </div>
 
-            {folderTestResult ? <div className="text-sm opacity-90">{folderTestResult}</div> : null}
+            {folderTestResult ? (
+              <div className="text-sm opacity-90">{folderTestResult}</div>
+            ) : null}
+
+            {data.folderCache?.lastError ? (
+              <div className="text-sm text-red-200/90 bg-red-500/10 rounded-lg px-3 py-2 break-words">
+                {data.folderCache.lastError}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
