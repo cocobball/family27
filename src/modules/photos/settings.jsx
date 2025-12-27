@@ -1,8 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { defaultPhotosData, migratePhotosData, DEMO_SETS, isLikelyImagePath } from "./helpers.js";
 
-const LOCAL_PHOTOS_DIR = "/opt/shared/photos/memories-1";
-
 // --- ctx compatibility ---
 function storeGet(ctx, fallback) {
   const s = ctx.store;
@@ -168,13 +166,19 @@ export default function PhotosSettings({ ctx }) {
   }
 
   async function onLoadLocalNow() {
+    const localPath = String(s.localFolderPath || "").trim();
+    if (!localPath) {
+      setFolderTestResult("Error: Enter a local folder path first.");
+      return;
+    }
+
     setBusy(true);
     setFolderTestResult("");
     try {
       const response = await fetch("/api/v1/photos/local/list", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: LOCAL_PHOTOS_DIR }),
+        body: JSON.stringify({ path: localPath }),
       });
 
       if (!response.ok) {
@@ -304,12 +308,17 @@ export default function PhotosSettings({ ctx }) {
         {s.source === "local" ? (
           <div className="mt-3 space-y-2">
             <div className="text-xs opacity-70">Local folder path</div>
-            <div className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-sm opacity-80 font-mono">
-              {LOCAL_PHOTOS_DIR}
-            </div>
+            <input
+              value={s.localFolderPath || "/opt/family-dashboard-data/photos/memories-1"}
+              onChange={(e) => saveSettings({ localFolderPath: e.target.value })}
+              placeholder="/opt/family-dashboard-data/photos/memories-1"
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 font-mono text-sm"
+            />
 
             <div className="text-[11px] opacity-70 leading-relaxed">
               This is the full path to a folder on the Pi's filesystem. The backend service will scan it for images.
+              <br />
+              Allowed directories: /home/masri/Pictures, /opt/family-dashboard-data/photos
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
