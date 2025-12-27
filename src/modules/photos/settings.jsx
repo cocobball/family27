@@ -165,6 +165,50 @@ export default function PhotosSettings({ ctx }) {
     }
   }
 
+  async function onLoadLocalNow() {
+    const localPath = String(s.localFolderPath || "").trim();
+    if (!localPath) {
+      setFolderTestResult("Enter a local folder path first.");
+      return;
+    }
+
+    setBusy(true);
+    setFolderTestResult("");
+    try {
+      const response = await fetch("/api/v1/photos/local/list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: localPath }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMsg = errorData?.error || `Request failed (${response.status})`;
+        setFolderCache({ lastError: errorMsg, fetchedAt: new Date().toISOString() });
+        setFolderTestResult(errorMsg);
+        return;
+      }
+
+      const data = await response.json();
+      const urls = Array.isArray(data?.images) ? data.images : [];
+
+      setFolderCache({
+        urls,
+        fetchedAt: new Date().toISOString(),
+        lastError: "",
+      });
+
+      setFolderTestResult(`Loaded ${urls.length} images.`);
+      saveSettings({ source: "local" });
+    } catch (e) {
+      const msg = String(e?.message || e);
+      setFolderCache({ lastError: msg, fetchedAt: new Date().toISOString() });
+      setFolderTestResult(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const demoNames = Object.keys(DEMO_SETS);
   const folderCount = data.folderCache?.urls?.length || 0;
 
@@ -242,6 +286,7 @@ export default function PhotosSettings({ ctx }) {
               <option value="demo">Demo</option>
               <option value="uploaded">Uploaded</option>
               <option value="folder">Folder URL (NAS / network share via HTTP)</option>
+              <option value="local">Local folder (on the Pi)</option>
             </select>
           </div>
 
@@ -259,6 +304,35 @@ export default function PhotosSettings({ ctx }) {
             </select>
           </div>
         </div>
+
+        {s.source === "local" ? (
+          <div className="mt-3 space-y-2">
+            <div className="text-xs opacity-70">Local folder path</div>
+            <input
+              value={s.localFolderPath}
+              onChange={(e) => saveSettings({ localFolderPath: e.target.value })}
+              placeholder="/home/masri/Pictures/memories-1"
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+            />
+
+            <div className="text-[11px] opacity-70 leading-relaxed">
+              This is the full path to a folder on the Pi's filesystem. The backend service will scan it for images.
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                className="btn btnPrimary"
+                onClick={onLoadLocalNow}
+                type="button"
+                disabled={busy}
+              >
+                Test & Load
+              </button>
+            </div>
+
+            {folderTestResult ? <div className="text-sm opacity-90">{folderTestResult}</div> : null}
+          </div>
+        ) : null}
 
         {s.source === "folder" ? (
           <div className="mt-3 space-y-2">

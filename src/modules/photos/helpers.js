@@ -21,7 +21,7 @@ export function defaultPhotosData() {
       shuffle: true,
       touchToEnable: false,   // show a "Start screensaver" button in the module card
 
-      source: "demo",         // "demo" | "uploaded" | "folder"
+      source: "demo",         // "demo" | "uploaded" | "folder" | "local"
       demoSet: "Family",
 
       // "folder" source (HTTP directory listing or JSON manifest)
@@ -29,6 +29,10 @@ export function defaultPhotosData() {
       // Or manifest file:      /photos/memories-1/manifest.json
       folderUrl: "",
       folderAutoRefreshMinutes: 0, // 0 = never
+
+      // "local" source (local filesystem folder on the Pi)
+      // Example: /home/masri/Pictures/memories-1
+      localFolderPath: "",
 
       // UI / playback
       fadeMs: 700,            // crossfade duration (ms)
@@ -86,7 +90,7 @@ export function migratePhotosData(raw) {
   next.settings.touchToEnable = !!next.settings.touchToEnable;
 
   const src = String(next.settings.source || "demo");
-  next.settings.source = src === "uploaded" || src === "folder" ? src : "demo";
+  next.settings.source = src === "uploaded" || src === "folder" || src === "local" ? src : "demo";
 
   next.settings.demoSet = String(next.settings.demoSet || base.settings.demoSet);
   next.settings.folderUrl = String(next.settings.folderUrl || "");
@@ -96,6 +100,7 @@ export function migratePhotosData(raw) {
     1440,
     base.settings.folderAutoRefreshMinutes
   );
+  next.settings.localFolderPath = String(next.settings.localFolderPath || "");
 
   next.settings.fadeMs = clampNumber(next.settings.fadeMs, 0, 5000, base.settings.fadeMs);
   next.settings.fit = next.settings.fit === "contain" ? "contain" : "cover";
@@ -149,9 +154,11 @@ export function getActivePhotoList(data) {
     return d.uploaded.items.map((x) => x.dataUrl).filter(Boolean);
   }
 
-  if (source === "folder" && d.folderCache.urls.length) {
+  // Both "folder" (HTTP) and "local" (Pi filesystem via backend) populate folderCache.urls
+  if ((source === "folder" || source === "local") && d.folderCache.urls.length) {
     return d.folderCache.urls.filter(Boolean);
   }
+
 
   const list = DEMO_SETS[demoSet] || DEMO_SETS.Family;
   return list.slice();
