@@ -51,6 +51,7 @@ export function defaultData() {
     planner: { weeks: {} },
     grocery: { items: [] },
     settings: { weekStartsOnMonday: true, autoDedupeGrocery: true },
+    ui: { lastTab: "planner", lastWeekStart: null, lastActiveDay: "Monday" },
   };
 }
 

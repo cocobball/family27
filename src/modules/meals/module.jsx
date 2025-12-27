@@ -82,7 +82,6 @@ function EmptyHint({ children }) {
 }
 
 export default function MealsModule({ ctx }) {
-  const [tab, setTab] = useState("planner"); // planner | recipes | receipts | grocery
   const fileRef = useRef(null);
 
   // --- Load initial data ONCE ---
@@ -156,12 +155,14 @@ export default function MealsModule({ ctx }) {
 
   const settings = data.settings || defaultData().settings;
 
-  // Planner state
-  const [weekStart, setWeekStart] = useState(() => getWeekKey(new Date(), settings.weekStartsOnMonday));
-  const [activeDay, setActiveDay] = useState(() => {
-    const idx = (new Date().getDay() + 6) % 7;
-    return DAYS[idx] || "Monday";
-  });
+  // UI state (restore from persisted data)
+  const [tab, setTab] = useState(() => data.ui?.lastTab || "planner");
+  const [weekStart, setWeekStart] = useState(() => 
+    data.ui?.lastWeekStart || getWeekKey(new Date(), settings.weekStartsOnMonday)
+  );
+  const [activeDay, setActiveDay] = useState(() => 
+    data.ui?.lastActiveDay || DAYS[(new Date().getDay() + 6) % 7] || "Monday"
+  );
 
   // ensure week exists
   useEffect(() => {
@@ -178,6 +179,17 @@ export default function MealsModule({ ctx }) {
       };
     });
   }, [weekStart]);
+
+  // Persist UI state (tab, week, day) to module data
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setData(prev => ({
+        ...prev,
+        ui: { lastTab: tab, lastWeekStart: weekStart, lastActiveDay: activeDay }
+      }));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [tab, weekStart, activeDay]);
 
   // Recipe editor
   const [editingRecipeId, setEditingRecipeId] = useState(null);
