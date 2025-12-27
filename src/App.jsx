@@ -11,6 +11,9 @@ import { applyThemeVars } from "./core/themes.js";
 import { loadDb, saveDb, createEmptyDb, DB_KEY } from "./core/dashboardStore.js";
 import { STARTER_ENABLED, createWindowForModule, createDefaultLayout } from "./core/layoutDefaults.js";
 import { loadModules } from "./core/moduleLoader.js";
+import { installKioskOskFocusFix } from "./kiosk/oskFocusFix.js";
+
+installKioskOskFocusFix();
 
 // ✅ NEW: backend-backed module state (generic for all modules)
 import {
