@@ -89,6 +89,17 @@ export default function PhotosSettings({ ctx }) {
 
   const [busy, setBusy] = useState(false);
   const [folderTestResult, setFolderTestResult] = useState("");
+  const [localFolderPath, setLocalFolderPath] = useState(s.localFolderPath || "");
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [pickerCurrentPath, setPickerCurrentPath] = useState("");
+  const [pickerFolders, setPickerFolders] = useState([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+
+  // Sync localFolderPath state with settings when source changes
+  useMemo(() => {
+    setLocalFolderPath(s.localFolderPath || "");
+  }, [s.source]);
 
   function saveSettings(patch) {
     storeSet(ctx, {
@@ -166,7 +177,7 @@ export default function PhotosSettings({ ctx }) {
   }
 
   async function onLoadLocalNow() {
-    const localPath = String(s.localFolderPath || "").trim();
+    const localPath = localFolderPath.trim();
     if (!localPath) {
       setFolderTestResult("Enter a local folder path first.");
       return;
@@ -213,6 +224,51 @@ export default function PhotosSettings({ ctx }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function loadFolderContents(path) {
+    setPickerLoading(true);
+    setPickerError("");
+    try {
+      const response = await fetch(`/api/v1/photos/local/folders?path=${encodeURIComponent(path)}`);
+      
+      if (!response.ok) {
+        let errorMsg;
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData?.error || `Request failed (${response.status})`;
+        } catch {
+          errorMsg = `Failed to load folders (${response.status}): ${response.statusText || "Unknown error"}`;
+        }
+        setPickerError(errorMsg);
+        setPickerFolders([]);
+        return;
+      }
+
+      const data = await response.json();
+      setPickerFolders(data.folders || []);
+      setPickerCurrentPath(path);
+    } catch (e) {
+      setPickerError(String(e?.message || e));
+      setPickerFolders([]);
+    } finally {
+      setPickerLoading(false);
+    }
+  }
+
+  function openFolderPicker() {
+    setShowFolderPicker(true);
+    setPickerCurrentPath("");
+    setPickerFolders([]);
+    setPickerError("");
+  }
+
+  function selectFolder() {
+    if (pickerCurrentPath) {
+      setLocalFolderPath(pickerCurrentPath);
+      saveSettings({ localFolderPath: pickerCurrentPath });
+    }
+    setShowFolderPicker(false);
   }
 
   const demoNames = Object.keys(DEMO_SETS);
@@ -314,12 +370,23 @@ export default function PhotosSettings({ ctx }) {
         {s.source === "local" ? (
           <div className="mt-3 space-y-2">
             <div className="text-xs opacity-70">Local folder path</div>
-            <input
-              value={s.localFolderPath !== undefined && s.localFolderPath !== null && s.localFolderPath !== "" ? s.localFolderPath : "/opt/family-dashboard-data/photos/memories-1"}
-              onChange={(e) => saveSettings({ localFolderPath: e.target.value })}
-              placeholder="/opt/family-dashboard-data/photos/memories-1"
-              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 font-mono text-sm text-white"
-            />
+            <div className="flex gap-2">
+              <input
+                value={localFolderPath}
+                onChange={(e) => setLocalFolderPath(e.target.value)}
+                onBlur={(e) => saveSettings({ localFolderPath: e.target.value })}
+                placeholder="/opt/family-dashboard-data/photos/memories-1"
+                className="flex-1 rounded-xl bg-white/5 border border-white/15 px-3 py-2 font-mono text-sm text-white"
+              />
+              <button
+                className="btn"
+                onClick={openFolderPicker}
+                type="button"
+                disabled={busy}
+              >
+                Browse…
+              </button>
+            </div>
 
             <div className="text-[11px] opacity-70 leading-relaxed">
               This is the full path to a folder on the Pi's filesystem. The backend service will scan it for images.
@@ -506,6 +573,93 @@ export default function PhotosSettings({ ctx }) {
           </label>
         </div>
       </div>
+
+      {/* Folder Picker Modal */}
+      {showFolderPicker && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowFolderPicker(false)}>
+          <div className="bg-gray-900 border border-white/15 rounded-2xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold">Browse Folders on Pi</h3>
+              <button className="text-white/60 hover:text-white" onClick={() => setShowFolderPicker(false)}>✕</button>
+            </div>
+
+            {/* Breadcrumb */}
+            {pickerCurrentPath && (
+              <div className="mb-3 text-sm font-mono opacity-80 bg-white/5 rounded-lg px-3 py-2">
+                Current: {pickerCurrentPath}
+              </div>
+            )}
+
+            {/* Root folders or current folder contents */}
+            <div className="flex-1 overflow-y-auto space-y-2 mb-4">
+              {!pickerCurrentPath ? (
+                // Show allowed roots
+                <>
+                  <div className="text-sm opacity-70 mb-2">Select a root directory:</div>
+                  <button
+                    className="w-full text-left px-4 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 transition-colors"
+                    onClick={() => loadFolderContents("/home/masri/Pictures")}
+                  >
+                    📁 /home/masri/Pictures
+                  </button>
+                  <button
+                    className="w-full text-left px-4 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 transition-colors"
+                    onClick={() => loadFolderContents("/opt/family-dashboard-data/photos")}
+                  >
+                    📁 /opt/family-dashboard-data/photos
+                  </button>
+                </>
+              ) : (
+                <>
+                  {/* Back button */}
+                  {pickerCurrentPath !== "/home/masri/Pictures" && pickerCurrentPath !== "/opt/family-dashboard-data/photos" && (
+                    <button
+                      className="w-full text-left px-4 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 transition-colors"
+                      onClick={() => {
+                        const parentPath = pickerCurrentPath.split("/").slice(0, -1).join("/") || "/";
+                        loadFolderContents(parentPath);
+                      }}
+                    >
+                      ⬆️ .. (Go up)
+                    </button>
+                  )}
+
+                  {/* Subfolders */}
+                  {pickerLoading ? (
+                    <div className="text-center py-8 opacity-60">Loading folders...</div>
+                  ) : pickerError ? (
+                    <div className="text-red-200/90 bg-red-500/10 rounded-lg px-4 py-3">{pickerError}</div>
+                  ) : pickerFolders.length === 0 ? (
+                    <div className="text-center py-8 opacity-60">No subfolders found</div>
+                  ) : (
+                    pickerFolders.map((folder) => (
+                      <button
+                        key={folder.path}
+                        className="w-full text-left px-4 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 transition-colors"
+                        onClick={() => loadFolderContents(folder.path)}
+                      >
+                        📁 {folder.name}
+                      </button>
+                    ))
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-3 justify-end pt-3 border-t border-white/15">
+              <button className="btn" onClick={() => setShowFolderPicker(false)}>
+                Cancel
+              </button>
+              {pickerCurrentPath && (
+                <button className="btn btnPrimary" onClick={selectFolder}>
+                  Select this folder
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
