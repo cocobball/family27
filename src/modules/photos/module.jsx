@@ -1,253 +1,297 @@
-/**
- * Photos / Screensaver module helpers
- *
- * IMPORTANT (NAS / network share):
- * Browsers cannot read SMB paths like \\192.168.50.199\shared\photos directly.
- * To use a NAS/share, you must expose the folder over HTTP from the Pi (recommended: nginx alias)
- * and then point this module at the HTTP folder URL (example: /photos/memories-1/).
- *
- * Storage notes:
- * - Uploaded photos are stored as data URLs (base64) so they persist with the dashboard DB.
- * - This can grow the DB. Keep uploads reasonable (or downscale externally).
- */
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { defaultPhotosData, migratePhotosData, getActivePhotoList, shuffleInPlace } from "./helpers.js";
 
-export function defaultPhotosData() {
-  return {
-    version: 2,
-    settings: {
-      enabled: false,
-      idleMinutes: 5, // minutes of inactivity before screensaver starts
-      slideSeconds: 12, // seconds per photo
-      shuffle: true,
-      touchToEnable: false, // show a "Start screensaver" button in the module card
-
-      source: "demo", // "demo" | "uploaded" | "folder" | "local"
-      demoSet: "Family",
-
-      // "folder" source (HTTP directory listing or JSON manifest)
-      // Example (nginx alias): /photos/memories-1/
-      // Or manifest file:      /photos/memories-1/manifest.json
-      folderUrl: "",
-      folderAutoRefreshMinutes: 0, // 0 = never
-
-      // "local" source (local filesystem folder on the Pi)
-      // Example: /opt/shared/photos/memories-1
-      localFolderPath: "",
-
-      // UI / playback
-      fadeMs: 700, // crossfade duration (ms)
-
-      // Fit options:
-      // - cover: fills screen, crops (may look "zoomed")
-      // - contain: shows full image, letterbox bars
-      // - auto: chooses cover/contain per image based on aspect ratio mismatch
-      // - scale-down: like contain, but won't upscale small images
-      fit: "cover", // "cover" | "contain" | "auto" | "scale-down"
-
-      // When image doesn't fill the screen (contain/scale-down), optionally fill background
-      // - none: black bars
-      // - blur: blurred cover version behind the main image (best "full screen" look without cropping)
-      backgroundMode: "blur", // "none" | "blur"
-      backgroundBlurPx: 28, // 0..60
-      backgroundOpacity: 0.55, // 0..1
-
-      dim: 0.2, // 0..0.85 black overlay
-      showClock: true,
-      showCounter: true,
-      showTitle: true, // show "Family Photos" label
-    },
-
-    // "uploaded" source
-    uploaded: {
-      items: [
-        // { id, name, type, dataUrl, addedAt }
-      ],
-    },
-
-    // Cache used by BOTH "folder" and "local" sources
-    folderCache: {
-      urls: [], // resolved image URLs
-      fetchedAt: null, // ISO timestamp
-      lastError: "", // string
-    },
-  };
+// --- ctx compatibility ---
+function storeGet(ctx, fallback) {
+  const s = ctx.store;
+  if (s?.getModuleData) return s.getModuleData(ctx.moduleId, fallback);
+  if (s?.get) return s.get(fallback);
+  return fallback;
 }
 
-export function migratePhotosData(raw) {
-  const base = defaultPhotosData();
-  const d = raw && typeof raw === "object" ? raw : {};
-  // keep for forward compatibility, even if unused here
-  const version = Number(d.version || 0);
-  void version;
-
-  // v0/v1 -> v2: ensure shape + new settings
-  const next = {
-    ...base,
-    ...d,
-    version: 2,
-    settings: { ...base.settings, ...(d.settings || {}) },
-    uploaded: {
-      items: Array.isArray(d.uploaded?.items) ? d.uploaded.items : base.uploaded.items,
-    },
-    folderCache: {
-      ...base.folderCache,
-      ...(d.folderCache || {}),
-      urls: Array.isArray(d.folderCache?.urls) ? d.folderCache.urls : base.folderCache.urls,
-      fetchedAt: d.folderCache?.fetchedAt ? String(d.folderCache.fetchedAt) : base.folderCache.fetchedAt,
-      lastError: d.folderCache?.lastError ? String(d.folderCache.lastError) : "",
-    },
-  };
-
-  // sanitize settings
-  next.settings.idleMinutes = clampNumber(next.settings.idleMinutes, 0.25, 240, base.settings.idleMinutes);
-  next.settings.slideSeconds = clampNumber(next.settings.slideSeconds, 3, 300, base.settings.slideSeconds);
-  next.settings.enabled = !!next.settings.enabled;
-  next.settings.shuffle = !!next.settings.shuffle;
-  next.settings.touchToEnable = !!next.settings.touchToEnable;
-
-  const src = String(next.settings.source || "demo");
-  next.settings.source = src === "uploaded" || src === "folder" || src === "local" ? src : "demo";
-
-  next.settings.demoSet = String(next.settings.demoSet || base.settings.demoSet);
-
-  next.settings.folderUrl = String(next.settings.folderUrl || "");
-  next.settings.folderAutoRefreshMinutes = clampNumber(
-    next.settings.folderAutoRefreshMinutes,
-    0,
-    1440,
-    base.settings.folderAutoRefreshMinutes
-  );
-
-  next.settings.localFolderPath = String(next.settings.localFolderPath || "");
-
-  next.settings.fadeMs = clampNumber(next.settings.fadeMs, 0, 5000, base.settings.fadeMs);
-
-  // ✅ IMPORTANT: preserve new fit values
-  {
-    const fit = String(next.settings.fit || base.settings.fit);
-    const allowed = new Set(["cover", "contain", "auto", "scale-down"]);
-    next.settings.fit = allowed.has(fit) ? fit : base.settings.fit;
-  }
-
-  next.settings.dim = clampNumber(next.settings.dim, 0, 0.85, base.settings.dim);
-  next.settings.showClock = !!next.settings.showClock;
-  next.settings.showCounter = !!next.settings.showCounter;
-  next.settings.showTitle = next.settings.showTitle !== false;
-
-  {
-    const bg = String(next.settings.backgroundMode || base.settings.backgroundMode);
-    next.settings.backgroundMode = bg === "none" || bg === "blur" ? bg : base.settings.backgroundMode;
-  }
-  next.settings.backgroundBlurPx = clampNumber(
-    next.settings.backgroundBlurPx,
-    0,
-    60,
-    base.settings.backgroundBlurPx
-  );
-  next.settings.backgroundOpacity = clampNumber(
-    next.settings.backgroundOpacity,
-    0,
-    1,
-    base.settings.backgroundOpacity
-  );
-
-  return next;
+function pad2(n) {
+  const x = Math.floor(Math.abs(n));
+  return x < 10 ? `0${x}` : String(x);
 }
 
-function clampNumber(v, min, max, fallback) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, n));
+function getClockString() {
+  const d = new Date();
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-// --- Demo photo sets (stable URLs) ---
-export const DEMO_SETS = {
-  Family: [
-    "https://picsum.photos/id/1027/1600/900",
-    "https://picsum.photos/id/1035/1600/900",
-    "https://picsum.photos/id/1062/1600/900",
-    "https://picsum.photos/id/1074/1600/900",
-    "https://picsum.photos/id/1084/1600/900",
-    "https://picsum.photos/id/1011/1600/900",
-  ],
-  Nature: [
-    "https://picsum.photos/id/1015/1600/900",
-    "https://picsum.photos/id/1016/1600/900",
-    "https://picsum.photos/id/1020/1600/900",
-    "https://picsum.photos/id/1039/1600/900",
-    "https://picsum.photos/id/1043/1600/900",
-    "https://picsum.photos/id/1056/1600/900",
-  ],
-  Cities: [
-    "https://picsum.photos/id/1012/1600/900",
-    "https://picsum.photos/id/1013/1600/900",
-    "https://picsum.photos/id/1014/1600/900",
-    "https://picsum.photos/id/1025/1600/900",
-    "https://picsum.photos/id/1031/1600/900",
-    "https://picsum.photos/id/1049/1600/900",
-  ],
-};
+function chooseFit(fitSetting, imgSize, screenSize) {
+  const fit = String(fitSetting || "cover");
+  if (fit !== "auto") return fit;
 
-export function getActivePhotoList(data) {
-  const d = migratePhotosData(data);
-  const { source, demoSet } = d.settings;
+  const iw = imgSize?.w || 0;
+  const ih = imgSize?.h || 0;
+  const sw = screenSize?.w || window.innerWidth;
+  const sh = screenSize?.h || window.innerHeight;
+  if (!iw || !ih || !sw || !sh) return "cover";
 
-  console.log("[photos] getActivePhotoList - source:", source);
-
-  if (source === "uploaded" && d.uploaded.items.length) {
-    const urls = d.uploaded.items.map((x) => x.dataUrl).filter(Boolean);
-    console.log("[photos] Using uploaded source:", urls.length, "images, first 3:", urls.slice(0, 3));
-    return urls;
-  }
-
-  // Both "folder" (HTTP) and "local" (Pi filesystem via backend) populate folderCache.urls
-  if ((source === "folder" || source === "local") && d.folderCache.urls.length) {
-    const urls = d.folderCache.urls.filter(Boolean);
-    console.log("[photos] Using folder/local source:", urls.length, "images, first 3:", urls.slice(0, 3));
-    return urls;
-  }
-
-  // ONLY use demo set when source === "demo" OR as absolute fallback
-  if (source === "demo") {
-    const list = DEMO_SETS[demoSet] || DEMO_SETS.Family;
-    console.log("[photos] Using demo source:", demoSet, "-", list.length, "images, first 3:", list.slice(0, 3));
-    return list.slice();
-  }
-
-  // Fallback: if source is local/folder but no URLs cached yet, show empty
-  console.warn("[photos] No images available for source:", source, "- folderCache.urls:", d.folderCache.urls.length);
-  return [];
+  const ia = iw / ih;
+  const sa = sw / sh;
+  const mismatch = ia > sa ? ia / sa : sa / ia; // >= 1
+  return mismatch >= 1.35 ? "contain" : "cover";
 }
 
-export function shuffleInPlace(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    const t = arr[i];
-    arr[i] = arr[j];
-    arr[j] = t;
-  }
-  return arr;
-}
+export default function PhotosModule({ ctx }) {
+  const raw = storeGet(ctx, defaultPhotosData());
+  const data = useMemo(() => migratePhotosData(raw), [raw]);
+  const s = data.settings;
 
-export function formatMinutes(mins) {
-  const n = Number(mins);
-  if (!Number.isFinite(n)) return "";
-  if (n < 1) return `${Math.round(n * 60)}s`;
-  if (n === 1) return "1 min";
-  return `${Math.round(n)} mins`;
-}
+  const [active, setActive] = useState(false);
+  const [idx, setIdx] = useState(0);
+  const [prevUrl, setPrevUrl] = useState("");
+  const [clock, setClock] = useState(getClockString());
+  const [imgSize, setImgSize] = useState({ w: 0, h: 0 });
+  const [screenSize, setScreenSize] = useState({ w: window.innerWidth, h: window.innerHeight });
 
-// For folder listing / manifest filtering
-export function isLikelyImagePath(p) {
-  const raw = String(p || "").toLowerCase();
-  const s = raw.split("?")[0].split("#")[0];
+  const lastActivityRef = useRef(Date.now());
+  const slideTimerRef = useRef(null);
+
+  // Build list (and keep shuffle stable per list)
+  const urls = useMemo(() => {
+    const list = getActivePhotoList(data).filter(Boolean);
+    const out = list.slice();
+    if (s.shuffle) shuffleInPlace(out);
+    return out;
+  }, [data, s.shuffle]);
+
+  // keep idx valid
+  useEffect(() => {
+    if (!urls.length) setIdx(0);
+    else setIdx((x) => Math.max(0, Math.min(x, urls.length - 1)));
+  }, [urls.length]);
+
+  // screen size
+  useEffect(() => {
+    const onResize = () => setScreenSize({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // idle detection
+  useEffect(() => {
+    if (!s.enabled) return;
+
+    const onAct = () => {
+      lastActivityRef.current = Date.now();
+      if (active) setActive(false);
+    };
+
+    const opts = { capture: true, passive: true };
+    window.addEventListener("pointerdown", onAct, opts);
+    window.addEventListener("pointermove", onAct, opts);
+    window.addEventListener("keydown", onAct, opts);
+    window.addEventListener("touchstart", onAct, opts);
+
+    const interval = window.setInterval(() => {
+      if (active) return;
+      const idleMs = Date.now() - lastActivityRef.current;
+      const thresholdMs = Math.max(0.25, Number(s.idleMinutes || 5)) * 60_000;
+      if (idleMs >= thresholdMs) setActive(true);
+    }, 750);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("pointerdown", onAct, opts);
+      window.removeEventListener("pointermove", onAct, opts);
+      window.removeEventListener("keydown", onAct, opts);
+      window.removeEventListener("touchstart", onAct, opts);
+    };
+  }, [s.enabled, s.idleMinutes, active]);
+
+  // slide timer
+  useEffect(() => {
+    if (!active) {
+      if (slideTimerRef.current) window.clearInterval(slideTimerRef.current);
+      slideTimerRef.current = null;
+      return;
+    }
+    if (!urls.length) return;
+
+    const seconds = Math.max(3, Number(s.slideSeconds || 12));
+    if (slideTimerRef.current) window.clearInterval(slideTimerRef.current);
+    slideTimerRef.current = window.setInterval(() => {
+      setIdx((x) => (urls.length ? (x + 1) % urls.length : 0));
+    }, seconds * 1000);
+
+    return () => {
+      if (slideTimerRef.current) window.clearInterval(slideTimerRef.current);
+      slideTimerRef.current = null;
+    };
+  }, [active, urls.length, s.slideSeconds]);
+
+  // clock update
+  useEffect(() => {
+    if (!active || !s.showClock) return;
+    const t = window.setInterval(() => setClock(getClockString()), 1000);
+    return () => window.clearInterval(t);
+  }, [active, s.showClock]);
+
+  // exit on escape
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e) => {
+      if (e.key === "Escape") setActive(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active]);
+
+  const currentUrl = urls[idx] || "";
+  const nextUrl = urls.length ? urls[(idx + 1) % urls.length] : "";
+
+  // measure current image for auto fit
+  useEffect(() => {
+    if (!currentUrl) {
+      setImgSize({ w: 0, h: 0 });
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      setImgSize({ w: img.naturalWidth || 0, h: img.naturalHeight || 0 });
+    };
+    img.onerror = () => {
+      if (cancelled) return;
+      setImgSize({ w: 0, h: 0 });
+    };
+    img.src = currentUrl;
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUrl]);
+
+  // preload next
+  useEffect(() => {
+    if (!active || !nextUrl) return;
+    const img = new Image();
+    img.src = nextUrl;
+  }, [active, nextUrl]);
+
+  // crossfade bookkeeping
+  useEffect(() => {
+    if (!active) return;
+    setPrevUrl((prev) => (prev === currentUrl ? prev : prev || currentUrl));
+    // when idx changes, keep previous for fade
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idx]);
+
+  useEffect(() => {
+    if (!active) return;
+    // when currentUrl changes, set prevUrl to previous current
+    setPrevUrl((prev) => (prev && prev !== currentUrl ? prev : prevUrl));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUrl]);
+
+  const fit = chooseFit(s.fit, imgSize, screenSize);
+  const objectFit = fit === "scale-down" ? "scale-down" : fit;
+
+  const fadeMs = Math.max(0, Number(s.fadeMs || 0));
+  const dim = Math.max(0, Math.min(0.85, Number(s.dim || 0)));
+
+  const showBlurBg = (s.backgroundMode || "none") === "blur" && !!currentUrl;
+
+  const showStartButton = !!s.touchToEnable && !active;
+
   return (
-    s.endsWith(".jpg") ||
-    s.endsWith(".jpeg") ||
-    s.endsWith(".png") ||
-    s.endsWith(".webp") ||
-    s.endsWith(".gif") ||
-    s.endsWith(".bmp") ||
-    s.endsWith(".avif")
+    <div className="w-full h-full relative overflow-hidden rounded-2xl bg-white/5 border border-white/10">
+      {/* Module card content */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        {showStartButton ? (
+          <button
+            className="btn btnPrimary"
+            type="button"
+            onClick={() => {
+              lastActivityRef.current = Date.now();
+              setActive(true);
+            }}
+            disabled={!urls.length}
+            title={!urls.length ? "No photos available" : "Start screensaver"}
+          >
+            Touch to enable
+          </button>
+        ) : (
+          <div className="text-sm opacity-70 px-4 text-center">
+            {s.enabled ? (urls.length ? "Screensaver ready" : "No photos loaded yet") : "Screensaver disabled"}
+          </div>
+        )}
+      </div>
+
+      {/* Fullscreen overlay */}
+      {active && (
+        <div className="fixed inset-0 z-[9999] bg-black" onClick={() => setActive(false)} style={{ touchAction: "manipulation" }}>
+          {/* blurred background */}
+          {showBlurBg ? (
+            <div
+              className="absolute inset-0"
+              style={{
+                backgroundImage: `url("${currentUrl}")`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+                filter: `blur(${Math.max(0, Number(s.backgroundBlurPx ?? 28))}px)`,
+                opacity: Math.max(0, Math.min(1, Number(s.backgroundOpacity ?? 0.55))),
+                transform: "scale(1.1)",
+              }}
+            />
+          ) : null}
+
+          {/* previous image (for crossfade) */}
+          {fadeMs > 0 && prevUrl && prevUrl !== currentUrl ? (
+            <img
+              src={prevUrl}
+              alt=""
+              className="absolute inset-0 w-full h-full"
+              style={{ objectFit, objectPosition: "center", opacity: 1 }}
+              draggable={false}
+            />
+          ) : null}
+
+          {/* current image */}
+          <img
+            key={currentUrl}
+            src={currentUrl}
+            alt=""
+            className="absolute inset-0 w-full h-full"
+            style={{
+              objectFit,
+              objectPosition: "center",
+              opacity: 1,
+              transition: fadeMs ? `opacity ${fadeMs}ms ease-in-out` : undefined,
+            }}
+            draggable={false}
+            onLoad={() => {
+              // when current finishes loading, update prevUrl to enable crossfade on next tick
+              setPrevUrl(currentUrl);
+            }}
+          />
+
+          {/* dim overlay */}
+          {dim > 0 ? <div className="absolute inset-0" style={{ background: `rgba(0,0,0,${dim})` }} /> : null}
+
+          {/* HUD */}
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute top-6 left-6 right-6 flex items-start justify-between gap-6">
+              <div className="flex flex-col gap-2">
+                {s.showTitle ? <div className="text-white/90 text-sm font-semibold">Family Photos</div> : null}
+                {s.showClock ? <div className="text-white/90 text-3xl font-semibold tabular-nums">{clock}</div> : null}
+              </div>
+
+              {s.showCounter && urls.length ? (
+                <div className="text-white/80 text-sm tabular-nums">
+                  {idx + 1} / {urls.length}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
+
+// Optional: keep backwards compatibility if anything imports helpers from module.jsx
+export * from "./helpers.js";
