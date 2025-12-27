@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { defaultPhotosData, migratePhotosData, DEMO_SETS } from "./helpers.js";
+import { defaultPhotosData, migratePhotosData, DEMO_SETS, isLikelyImagePath } from "./helpers.js";
 
 // --- ctx compatibility ---
 function storeGet(ctx, fallback) {
@@ -14,12 +14,81 @@ function storeSet(ctx, nextData) {
   if (s?.set) return s.set(nextData);
 }
 
+function normalizeFolderUrl(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+
+  let resolved = raw;
+  try {
+    resolved = new URL(raw, window.location.origin).toString();
+  } catch {
+    // keep as-is
+  }
+
+  // If it's a manifest file (json), do NOT force trailing slash
+  if (/\.(json)(\?|#|$)/i.test(resolved)) return resolved;
+
+  // Otherwise treat as folder URL
+  return resolved.endsWith("/") ? resolved : `${resolved}/`;
+}
+
+async function fetchImagesFromFolderUrl(folderUrl) {
+  const url = normalizeFolderUrl(folderUrl);
+  if (!url) return { urls: [], error: "Folder URL is empty." };
+
+  const bust = url.includes("?") ? "&" : "?";
+  const res = await fetch(`${url}${bust}_ts=${Date.now()}`, { cache: "no-store" });
+
+  if (!res.ok) return { urls: [], error: `Failed to load folder (${res.status}).` };
+
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+
+  // JSON manifest support
+  // Accept:
+  //  - ["url1","url2"]
+  //  - { images: ["url1", ...] }
+  if (ct.includes("application/json")) {
+    try {
+      const j = await res.json();
+      const arr = Array.isArray(j) ? j : Array.isArray(j?.images) ? j.images : [];
+      const urls = arr
+        .map((x) => String(x || ""))
+        .filter(Boolean)
+        .filter(isLikelyImagePath)
+        .map((p) => new URL(p, url).toString());
+      return { urls: Array.from(new Set(urls)), error: "" };
+    } catch (e) {
+      return { urls: [], error: `JSON parse error: ${String(e?.message || e)}` };
+    }
+  }
+
+  // HTML directory listing parsing
+  const html = await res.text();
+  try {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const links = Array.from(doc.querySelectorAll("a"))
+      .map((a) => a.getAttribute("href"))
+      .filter(Boolean);
+
+    const urls = links
+      .map((href) => String(href))
+      .filter((href) => !href.endsWith("/")) // skip subfolders
+      .filter(isLikelyImagePath)
+      .map((href) => new URL(href, url).toString());
+
+    return { urls: Array.from(new Set(urls)), error: "" };
+  } catch (e) {
+    return { urls: [], error: `Unable to parse folder listing: ${String(e?.message || e)}` };
+  }
+}
+
 export default function PhotosSettings({ ctx }) {
   const raw = storeGet(ctx, defaultPhotosData());
   const data = useMemo(() => migratePhotosData(raw), [raw]);
   const s = data.settings;
 
   const [busy, setBusy] = useState(false);
+  const [folderTestResult, setFolderTestResult] = useState("");
 
   function saveSettings(patch) {
     storeSet(ctx, {
@@ -32,19 +101,28 @@ export default function PhotosSettings({ ctx }) {
     storeSet(ctx, { ...data, uploaded: { items } });
   }
 
+  function setFolderCache(cachePatch) {
+    storeSet(ctx, {
+      ...data,
+      folderCache: { ...(data.folderCache || {}), ...(cachePatch || {}) },
+    });
+  }
+
   async function onPickFiles(e) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
     setBusy(true);
     try {
-      const reads = files.map((f) => fileToDataUrl(f).then((dataUrl) => ({
-        id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
-        name: f.name,
-        type: f.type || "image/*",
-        dataUrl,
-        addedAt: new Date().toISOString(),
-      })));
+      const reads = files.map((f) =>
+        fileToDataUrl(f).then((dataUrl) => ({
+          id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          name: f.name,
+          type: f.type || "image/*",
+          dataUrl,
+          addedAt: new Date().toISOString(),
+        }))
+      );
 
       const items = await Promise.all(reads);
       setUploadedItems([...(data.uploaded.items || []), ...items]);
@@ -55,7 +133,40 @@ export default function PhotosSettings({ ctx }) {
     }
   }
 
+  async function onLoadFolderNow() {
+    const url = String(s.folderUrl || "").trim();
+    if (!url) {
+      setFolderTestResult("Enter a Folder URL first.");
+      return;
+    }
+
+    setBusy(true);
+    setFolderTestResult("");
+    try {
+      const out = await fetchImagesFromFolderUrl(url);
+      setFolderCache({
+        urls: out.urls,
+        fetchedAt: new Date().toISOString(),
+        lastError: out.error || "",
+      });
+
+      if (out.error) {
+        setFolderTestResult(out.error);
+      } else {
+        setFolderTestResult(`Loaded ${out.urls.length} images.`);
+        saveSettings({ source: "folder" });
+      }
+    } catch (e) {
+      const msg = String(e?.message || e);
+      setFolderCache({ lastError: msg, fetchedAt: new Date().toISOString() });
+      setFolderTestResult(msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const demoNames = Object.keys(DEMO_SETS);
+  const folderCount = data.folderCache?.urls?.length || 0;
 
   return (
     <div className="p-4 space-y-4">
@@ -130,6 +241,7 @@ export default function PhotosSettings({ ctx }) {
             >
               <option value="demo">Demo</option>
               <option value="uploaded">Uploaded</option>
+              <option value="folder">Folder URL (NAS / network share via HTTP)</option>
             </select>
           </div>
 
@@ -147,6 +259,63 @@ export default function PhotosSettings({ ctx }) {
             </select>
           </div>
         </div>
+
+        {s.source === "folder" ? (
+          <div className="mt-3 space-y-2">
+            <div className="text-xs opacity-70">Folder URL</div>
+            <input
+              value={s.folderUrl}
+              onChange={(e) => saveSettings({ folderUrl: e.target.value })}
+              placeholder="/photos/memories-1/   (or /photos/memories-1/manifest.json)"
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+            />
+
+            <div className="text-[11px] opacity-70 leading-relaxed">
+              SMB paths like <span className="opacity-90">\\192.168.50.199\shared\photos</span> can’t be read by the browser.
+              Mount that share on the Pi and expose it over HTTP (nginx alias), then point this field at that HTTP folder.
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button className="btn btnPrimary" onClick={onLoadFolderNow} type="button" disabled={busy}>
+                Test & Load
+              </button>
+
+              <button
+                className="btn"
+                onClick={() => setFolderCache({ urls: [], fetchedAt: null, lastError: "" })}
+                type="button"
+                disabled={busy || !folderCount}
+                title="Clear cached folder list"
+              >
+                Clear folder cache ({folderCount})
+              </button>
+
+              <div className="text-xs opacity-70">
+                {data.folderCache?.fetchedAt ? `Last loaded: ${new Date(data.folderCache.fetchedAt).toLocaleString()}` : "Not loaded yet"}
+              </div>
+            </div>
+
+            {folderTestResult ? <div className="text-sm opacity-90">{folderTestResult}</div> : null}
+            {data.folderCache?.lastError ? (
+              <div className="text-[11px] text-red-200/80 break-words">{data.folderCache.lastError}</div>
+            ) : null}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+              <div className="space-y-1">
+                <div className="text-xs opacity-70">Auto-refresh folder list</div>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={Number(s.folderAutoRefreshMinutes || 0)}
+                  onChange={(e) => saveSettings({ folderAutoRefreshMinutes: Number(e.target.value || 0) })}
+                  className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+                />
+                <div className="text-[11px] opacity-60">Minutes (0 = never)</div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="pt-2 border-t border-white/10" />
 
@@ -184,6 +353,67 @@ export default function PhotosSettings({ ctx }) {
               Use uploaded
             </button>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-white/5 border border-white/15 p-4 space-y-3">
+        <div className="text-sm font-semibold">Playback & UI</div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <div className="text-xs opacity-70">Crossfade (ms)</div>
+            <input
+              type="number"
+              min={0}
+              step={50}
+              value={Number(s.fadeMs || 0)}
+              onChange={(e) => saveSettings({ fadeMs: Number(e.target.value || 0) })}
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs opacity-70">Fit</div>
+            <select
+              value={s.fit}
+              onChange={(e) => saveSettings({ fit: e.target.value })}
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+            >
+              <option value="cover">Cover (fill screen)</option>
+              <option value="contain">Contain (no crop)</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs opacity-70">Dim overlay</div>
+            <input
+              type="number"
+              min={0}
+              max={0.85}
+              step={0.05}
+              value={Number(s.dim || 0)}
+              onChange={(e) => saveSettings({ dim: Number(e.target.value || 0) })}
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+            />
+            <div className="text-[11px] opacity-60">0 = none • 0.2 is nice • max 0.85</div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4 flex-wrap">
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={!!s.showClock} onChange={(e) => saveSettings({ showClock: e.target.checked })} />
+            Show clock
+          </label>
+
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={!!s.showCounter} onChange={(e) => saveSettings({ showCounter: e.target.checked })} />
+            Show counter
+          </label>
+
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={!!s.showTitle} onChange={(e) => saveSettings({ showTitle: e.target.checked })} />
+            Show title
+          </label>
         </div>
       </div>
     </div>
