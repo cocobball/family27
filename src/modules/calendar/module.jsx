@@ -1203,13 +1203,13 @@ export default function CalendarModule({ ctx }) {
           })()}
         </div>
 
-        <div className="flex-1 overflow-auto space-y-2 mt-3">
-          {filteredSelectedOccs.length ? (
-            filteredSelectedOccs.map((occ) => <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => openEdit(occ)} />)
-          ) : (
-            <div className="text-sm opacity-70">No events for this day.</div>
-          )}
-        </div>
+        <DayAgendaPane
+          selectedDate={sel}
+          prefs={prefs}
+          selectedOccs={filteredSelectedOccs}
+          occurrencesByDay={filteredOccurrencesByDay}
+          onEdit={openEdit}
+        />
 
         <div className="pt-3 border-t hairline" />
 
@@ -1232,6 +1232,77 @@ export default function CalendarModule({ ctx }) {
           onSave={saveEvent}
           onDelete={deleteEvent}
         />
+      )}
+    </div>
+  );
+}
+
+function buildUpcomingDaysWithEvents(occurrencesByDay, startDateStr, prefs, maxDaysToScan = 60, maxDaysToShow = 4) {
+  const out = [];
+  let cur = addDaysStr(startDateStr, 1);
+  let safety = 0;
+
+  while (safety++ < maxDaysToScan && out.length < maxDaysToShow) {
+    const occs = sortEventsForDay(occurrencesByDay[cur] ?? [], prefs);
+    if (occs.length) out.push({ day: cur, occs });
+    cur = addDaysStr(cur, 1);
+  }
+
+  return out;
+}
+
+function DayAgendaPane({
+  selectedDate,
+  prefs,
+  selectedOccs,
+  occurrencesByDay,
+  onEdit,
+}) {
+  const upcoming = useMemo(
+    () => buildUpcomingDaysWithEvents(occurrencesByDay, selectedDate, prefs, 90, 4),
+    [occurrencesByDay, selectedDate, prefs]
+  );
+
+  return (
+    <div className="flex-1 overflow-auto space-y-3 mt-3">
+      {/* Selected day events */}
+      <div className="space-y-2">
+        {selectedOccs.length ? (
+          selectedOccs.map((occ) => (
+            <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => onEdit(occ)} />
+          ))
+        ) : (
+          <div className="text-sm opacity-70">No events for this day.</div>
+        )}
+      </div>
+
+      {/* Upcoming days with events */}
+      {upcoming.length > 0 && (
+        <div className="pt-2 border-t hairline space-y-3">
+          <div className="text-xs opacity-70">Up next</div>
+
+          {upcoming.map(({ day, occs }) => (
+            <div
+              key={day}
+              className="rounded-2xl px-3 py-3"
+              style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}
+            >
+              <div className="font-semibold text-sm mb-2">{dayLabel(day)}</div>
+              <div className="space-y-2">
+                {occs.map((occ) => (
+                  <EventChip key={occ.key} occ={occ} prefs={prefs} onClick={() => onEdit(occ)} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* If nothing upcoming */}
+      {upcoming.length === 0 && selectedOccs.length === 0 && (
+        <div className="text-xs opacity-60">
+          No upcoming events found.
+        </div>
       )}
     </div>
   );
