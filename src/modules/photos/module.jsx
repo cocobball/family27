@@ -508,15 +508,17 @@ function ScreensaverOverlay({
             <img
               src={current}
               alt="Screensaver"
-              className={`w-full h-full ${fitClass} select-none`}
+              className={`w-full h-full ${fitClass} select-none block`}
+              style={{ objectPosition: "center" }}
               draggable={false}
             />
             {next ? (
               <img
                 src={next}
                 alt="Screensaver next"
-                className={`absolute inset-0 w-full h-full ${fitClass} select-none transition-opacity`}
+                className={`absolute inset-0 w-full h-full ${fitClass} select-none transition-opacity block`}
                 style={{
+                  objectPosition: "center",
                   opacity: showNext ? 1 : 0,
                   transitionDuration: `${Math.max(0, Number(fadeMs || 0))}ms`,
                 }}
