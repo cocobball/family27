@@ -1,629 +1,253 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Play, Pause, Image as ImageIcon, SkipBack, SkipForward, X } from "lucide-react";
-import {
-  defaultPhotosData,
-  migratePhotosData,
-  getActivePhotoList,
-  shuffleInPlace,
-  formatMinutes,
-  isLikelyImagePath,
-} from "./helpers.js";
-import { createPortal } from "react-dom";
+/**
+ * Photos / Screensaver module helpers
+ *
+ * IMPORTANT (NAS / network share):
+ * Browsers cannot read SMB paths like \\192.168.50.199\shared\photos directly.
+ * To use a NAS/share, you must expose the folder over HTTP from the Pi (recommended: nginx alias)
+ * and then point this module at the HTTP folder URL (example: /photos/memories-1/).
+ *
+ * Storage notes:
+ * - Uploaded photos are stored as data URLs (base64) so they persist with the dashboard DB.
+ * - This can grow the DB. Keep uploads reasonable (or downscale externally).
+ */
 
-// --- ctx compatibility (supports both store APIs found in your project) ---
-function storeGet(ctx, fallback) {
-  const s = ctx.store;
-  if (s?.getModuleData) return s.getModuleData(ctx.moduleId, fallback);
-  if (s?.get) return s.get(fallback);
-  return fallback;
-}
-function storeSet(ctx, nextData) {
-  const s = ctx.store;
-  if (s?.setModuleData) return s.setModuleData(ctx.moduleId, nextData);
-  if (s?.set) return s.set(nextData);
-}
-function sharedSet(ctx, patch) {
-  const shared = ctx.shared || ctx.sharedState;
-  if (!shared?.set) return;
-  try {
-    shared.set(patch);
-  } catch {
-    // ignore
-  }
-}
+export function defaultPhotosData() {
+  return {
+    version: 2,
+    settings: {
+      enabled: false,
+      idleMinutes: 5, // minutes of inactivity before screensaver starts
+      slideSeconds: 12, // seconds per photo
+      shuffle: true,
+      touchToEnable: false, // show a "Start screensaver" button in the module card
 
-function normalizeFolderUrl(input) {
-  const raw = String(input || "").trim();
-  if (!raw) return "";
+      source: "demo", // "demo" | "uploaded" | "folder" | "local"
+      demoSet: "Family",
 
-  // Resolve relative URLs against current origin
-  let resolved = raw;
-  try {
-    resolved = new URL(raw, window.location.origin).toString();
-  } catch {
-    // keep as-is
-  }
+      // "folder" source (HTTP directory listing or JSON manifest)
+      // Example (nginx alias): /photos/memories-1/
+      // Or manifest file:      /photos/memories-1/manifest.json
+      folderUrl: "",
+      folderAutoRefreshMinutes: 0, // 0 = never
 
-  // If it's a manifest file (json), do NOT force trailing slash
-  if (/\.(json)(\?|#|$)/i.test(resolved)) return resolved;
+      // "local" source (local filesystem folder on the Pi)
+      // Example: /opt/shared/photos/memories-1
+      localFolderPath: "",
 
-  // Otherwise treat as a folder URL
-  return resolved.endsWith("/") ? resolved : `${resolved}/`;
-}
+      // UI / playback
+      fadeMs: 700, // crossfade duration (ms)
 
-async function fetchImagesFromFolderUrl(folderUrl) {
-  const url = normalizeFolderUrl(folderUrl);
-  if (!url) return { urls: [], error: "Folder URL is empty." };
+      // Fit options:
+      // - cover: fills screen, crops (may look "zoomed")
+      // - contain: shows full image, letterbox bars
+      // - auto: chooses cover/contain per image based on aspect ratio mismatch
+      // - scale-down: like contain, but won't upscale small images
+      fit: "cover", // "cover" | "contain" | "auto" | "scale-down"
 
-  // Cache-bust so nginx/autoindex doesn't aggressively cache
-  const bust = url.includes("?") ? "&" : "?";
-  const res = await fetch(`${url}${bust}_ts=${Date.now()}`, { cache: "no-store" });
+      // When image doesn't fill the screen (contain/scale-down), optionally fill background
+      // - none: black bars
+      // - blur: blurred cover version behind the main image (best "full screen" look without cropping)
+      backgroundMode: "blur", // "none" | "blur"
+      backgroundBlurPx: 28, // 0..60
+      backgroundOpacity: 0.55, // 0..1
 
-  if (!res.ok) {
-    return { urls: [], error: `Failed to load folder (${res.status}).` };
-  }
+      dim: 0.2, // 0..0.85 black overlay
+      showClock: true,
+      showCounter: true,
+      showTitle: true, // show "Family Photos" label
+    },
 
-  const ct = (res.headers.get("content-type") || "").toLowerCase();
+    // "uploaded" source
+    uploaded: {
+      items: [
+        // { id, name, type, dataUrl, addedAt }
+      ],
+    },
 
-  // JSON manifest support
-  // Accept:
-  //  - ["url1","url2"]
-  //  - { images: ["url1", ...] }
-  if (ct.includes("application/json")) {
-    try {
-      const j = await res.json();
-      const arr = Array.isArray(j) ? j : Array.isArray(j?.images) ? j.images : [];
-      const urls = arr
-        .map((x) => String(x || ""))
-        .filter(Boolean)
-        .filter(isLikelyImagePath)
-        .map((p) => new URL(p, url).toString());
-      return { urls: Array.from(new Set(urls)), error: "" };
-    } catch (e) {
-      return { urls: [], error: `JSON parse error: ${String(e?.message || e)}` };
-    }
-  }
-
-  // HTML directory listing parsing
-  const html = await res.text();
-  try {
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    const links = Array.from(doc.querySelectorAll("a"))
-      .map((a) => a.getAttribute("href"))
-      .filter(Boolean);
-
-    const urls = links
-      .map((href) => String(href))
-      .filter((href) => !href.startsWith("?") && !href.startsWith("#"))
-      .filter((href) => !href.endsWith("/")) // skip subfolders (no recursion)
-      .filter(isLikelyImagePath)
-      .map((href) => new URL(href, url).toString());
-
-    return { urls: Array.from(new Set(urls)), error: "" };
-  } catch (e) {
-    // Regex fallback
-    const matches = Array.from(html.matchAll(/href=["']([^"']+)["']/gi)).map((m) => m[1]).filter(Boolean);
-    const urls = Array.from(
-      new Set(
-        matches
-          .filter((href) => !href.endsWith("/"))
-          .filter(isLikelyImagePath)
-          .map((href) => new URL(href, url).toString())
-      )
-    );
-    return { urls, error: urls.length ? "" : `Unable to parse folder listing: ${String(e?.message || e)}` };
-  }
+    // Cache used by BOTH "folder" and "local" sources
+    folderCache: {
+      urls: [], // resolved image URLs
+      fetchedAt: null, // ISO timestamp
+      lastError: "", // string
+    },
+  };
 }
 
-export default function PhotosModule({ ctx }) {
-  const raw = storeGet(ctx, defaultPhotosData());
-  const data = useMemo(() => migratePhotosData(raw), [raw]);
-  const s = data.settings;
+export function migratePhotosData(raw) {
+  const base = defaultPhotosData();
+  const d = raw && typeof raw === "object" ? raw : {};
+  // keep for forward compatibility, even if unused here
+  const version = Number(d.version || 0);
+  void version;
 
-  const [active, setActive] = useState(false); // screensaver active
-  const [index, setIndex] = useState(0);
-  const [paused, setPaused] = useState(false);
+  // v0/v1 -> v2: ensure shape + new settings
+  const next = {
+    ...base,
+    ...d,
+    version: 2,
+    settings: { ...base.settings, ...(d.settings || {}) },
+    uploaded: {
+      items: Array.isArray(d.uploaded?.items) ? d.uploaded.items : base.uploaded.items,
+    },
+    folderCache: {
+      ...base.folderCache,
+      ...(d.folderCache || {}),
+      urls: Array.isArray(d.folderCache?.urls) ? d.folderCache.urls : base.folderCache.urls,
+      fetchedAt: d.folderCache?.fetchedAt ? String(d.folderCache.fetchedAt) : base.folderCache.fetchedAt,
+      lastError: d.folderCache?.lastError ? String(d.folderCache.lastError) : "",
+    },
+  };
 
-  const idleTimerRef = useRef(null);
-  const lastActivityRef = useRef(Date.now());
-  const ignoreActivityUntilRef = useRef(0);
-  const slideTimerRef = useRef(null);
-  const refreshTimerRef = useRef(null);
-  const refreshInFlightRef = useRef(false);
+  // sanitize settings
+  next.settings.idleMinutes = clampNumber(next.settings.idleMinutes, 0.25, 240, base.settings.idleMinutes);
+  next.settings.slideSeconds = clampNumber(next.settings.slideSeconds, 3, 300, base.settings.slideSeconds);
+  next.settings.enabled = !!next.settings.enabled;
+  next.settings.shuffle = !!next.settings.shuffle;
+  next.settings.touchToEnable = !!next.settings.touchToEnable;
 
-  // Build photo list (demo, uploaded, or folderCache)
-  const photos = useMemo(() => {
-    const list = getActivePhotoList(data);
-    if (s.shuffle) shuffleInPlace(list);
-    console.log('[photos/module] Photo list built - source:', s.source, 'localFolderPath:', s.localFolderPath, 'urls.length:', list.length, 'lastError:', data.folderCache?.lastError || '(none)');
-    return list;
-  }, [data, s.shuffle, s.source, s.localFolderPath]);
+  const src = String(next.settings.source || "demo");
+  next.settings.source = src === "uploaded" || src === "folder" || src === "local" ? src : "demo";
 
-  const total = photos.length;
-  const currentSrc = total ? photos[index % total] : null;
+  next.settings.demoSet = String(next.settings.demoSet || base.settings.demoSet);
 
-  function setActiveState(next) {
-    setActive(next);
-    sharedSet(ctx, { screensaverActive: next });
-    ctx.eventBus?.emit?.("screensaver:activeChanged", { active: next, moduleId: ctx.moduleId });
-  }
-
-  function resetIdleClock() {
-    lastActivityRef.current = Date.now();
-
-    // Fix start flicker: ignore the same click that started it
-    if (active && Date.now() > ignoreActivityUntilRef.current) {
-      setActiveState(false);
-    }
-  }
-
-  async function refreshFolderList({ silent } = { silent: false }) {
-    if (refreshInFlightRef.current) return;
-    // ONLY refresh for 'folder' source (HTTP URLs), NOT for 'local' (filesystem)
-    if (s.source !== "folder") return;
-
-    const folderUrl = s.folderUrl;
-    if (!String(folderUrl || "").trim()) return;
-    
-    // Safety: Don't try to fetch filesystem paths
-    if (folderUrl.startsWith('/')) {
-      console.warn('[photos] Skipping refresh - folderUrl appears to be filesystem path:', folderUrl);
-      return;
-    }
-
-    refreshInFlightRef.current = true;
-    try {
-      const out = await fetchImagesFromFolderUrl(folderUrl);
-
-      const nextData = migratePhotosData(storeGet(ctx, defaultPhotosData()));
-      storeSet(ctx, {
-        ...nextData,
-        folderCache: {
-          urls: out.urls,
-          fetchedAt: new Date().toISOString(),
-          lastError: out.error || "",
-        },
-      });
-
-      if (!silent && out.error) {
-        console.warn("[photos] folder refresh error:", out.error);
-      }
-    } catch (e) {
-      const nextData = migratePhotosData(storeGet(ctx, defaultPhotosData()));
-      storeSet(ctx, {
-        ...nextData,
-        folderCache: {
-          ...(nextData.folderCache || {}),
-          fetchedAt: new Date().toISOString(),
-          lastError: String(e?.message || e),
-        },
-      });
-    } finally {
-      refreshInFlightRef.current = false;
-    }
-  }
-
-  // Attach global activity listeners when enabled
-  useEffect(() => {
-    if (!s.enabled) return;
-
-    const onAny = () => resetIdleClock();
-    const opts = { passive: true };
-
-    window.addEventListener("mousemove", onAny, opts);
-    window.addEventListener("mousedown", onAny, opts);
-    window.addEventListener("keydown", onAny);
-    window.addEventListener("touchstart", onAny, opts);
-    window.addEventListener("pointerdown", onAny, opts);
-    window.addEventListener("wheel", onAny, opts);
-
-    return () => {
-      window.removeEventListener("mousemove", onAny, opts);
-      window.removeEventListener("mousedown", onAny, opts);
-      window.removeEventListener("keydown", onAny);
-      window.removeEventListener("touchstart", onAny, opts);
-      window.removeEventListener("pointerdown", onAny, opts);
-      window.removeEventListener("wheel", onAny, opts);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.enabled, active]);
-
-  // Idle polling loop
-  useEffect(() => {
-    if (!s.enabled) {
-      setActive(false);
-      return;
-    }
-
-    if (idleTimerRef.current) clearInterval(idleTimerRef.current);
-
-    const idleMs = Math.max(250, Number(s.idleMinutes) * 60 * 1000);
-
-    idleTimerRef.current = setInterval(() => {
-      if (active) return;
-      const delta = Date.now() - lastActivityRef.current;
-      if (delta >= idleMs) {
-        setIndex(0);
-        setPaused(false);
-        setActiveState(true);
-      }
-    }, 500);
-
-    return () => {
-      if (idleTimerRef.current) clearInterval(idleTimerRef.current);
-      idleTimerRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.enabled, s.idleMinutes, active]);
-
-  // Background refresh for folder source
-  useEffect(() => {
-    if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
-    refreshTimerRef.current = null;
-
-    if (!s.enabled) return;
-    if (s.source !== "folder") return;
-
-    // Try once on boot if empty
-    if (!data.folderCache?.urls?.length && String(s.folderUrl || "").trim()) {
-      refreshFolderList({ silent: true });
-    }
-
-    const mins = Number(s.folderAutoRefreshMinutes || 0);
-    if (mins > 0) {
-      const ms = Math.max(10_000, mins * 60 * 1000);
-      refreshTimerRef.current = setInterval(() => {
-        refreshFolderList({ silent: true });
-      }, ms);
-    }
-
-    return () => {
-      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current);
-      refreshTimerRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.enabled, s.source, s.folderUrl, s.folderAutoRefreshMinutes, data.folderCache?.urls?.length]);
-
-  // Slide timer while active
-  useEffect(() => {
-    if (!active || paused) return;
-
-    const ms = Math.max(1000, Number(s.slideSeconds) * 1000);
-    if (slideTimerRef.current) clearInterval(slideTimerRef.current);
-
-    slideTimerRef.current = setInterval(() => {
-      setIndex((i) => (total ? (i + 1) % total : 0));
-    }, ms);
-
-    return () => {
-      if (slideTimerRef.current) clearInterval(slideTimerRef.current);
-      slideTimerRef.current = null;
-    };
-  }, [active, paused, s.slideSeconds, total]);
-
-  // Lock background scroll while active
-  useEffect(() => {
-    if (!active) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [active]);
-
-  const statusText = useMemo(() => {
-    if (!s.enabled) return "Screensaver off";
-    return `Screensaver on • starts after ${formatMinutes(s.idleMinutes)}`;
-  }, [s.enabled, s.idleMinutes]);
-
-  const sourceText = useMemo(() => {
-    if (s.source === "uploaded") return `Uploaded (${data.uploaded.items.length})`;
-    if (s.source === "folder") {
-      const n = data.folderCache?.urls?.length || 0;
-      return n ? `Folder (${n})` : "Folder (not loaded)";
-    }
-    return `Demo • ${s.demoSet}`;
-  }, [s.source, s.demoSet, data.uploaded.items.length, data.folderCache?.urls?.length]);
-
-  return (
-    <div className="h-full flex flex-col">
-      <div className="flex items-center gap-2">
-        <ImageIcon size={18} />
-        <div className="font-semibold">Photos</div>
-      </div>
-
-      <div className="mt-3 space-y-2 flex-1 min-h-0">
-        <div className="text-sm opacity-80">{statusText}</div>
-
-        <div className="rounded-2xl bg-white/5 border border-white/15 px-3 py-2">
-          <div className="text-xs opacity-70">Source</div>
-          <div className="text-sm opacity-90">{sourceText}</div>
-          {s.source === "folder" && data.folderCache?.lastError ? (
-            <div className="text-[11px] text-red-200/80 mt-1 break-words">
-              {data.folderCache.lastError}
-            </div>
-          ) : null}
-        </div>
-
-        {s.touchToEnable && (
-          <button
-            onClick={async () => {
-              lastActivityRef.current = Date.now();
-              ignoreActivityUntilRef.current = Date.now() + 750; // fixes "start flicker"
-
-              // If folder source and not loaded, try to load now
-              if (s.source === "folder" && !data.folderCache?.urls?.length) {
-                await refreshFolderList({ silent: true });
-              }
-
-              setIndex(0);
-              setPaused(false);
-              setActiveState(true);
-            }}
-            className="w-full rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 px-3 py-2 text-sm transition-all inline-flex items-center justify-center gap-2"
-            type="button"
-          >
-            <Play size={16} /> Start screensaver
-          </button>
-        )}
-
-        <div className="text-xs opacity-60 leading-relaxed">
-          Tip: click/tap a photo to return to the dashboard. Use ← → for prev/next, Space to pause.
-        </div>
-      </div>
-
-      {active && (
-        <ScreensaverOverlay
-          src={currentSrc}
-          hasPhotos={!!total}
-          paused={paused}
-          onTogglePause={() => setPaused((p) => !p)}
-          onExit={() => {
-            lastActivityRef.current = Date.now();
-            setActiveState(false);
-          }}
-          onPrev={() => setIndex((i) => (total ? (i - 1 + total) % total : 0))}
-          onNext={() => setIndex((i) => (total ? (i + 1) % total : 0))}
-          index={index}
-          total={total}
-          fadeMs={Number(s.fadeMs || 0)}
-          fit={s.fit}
-          dim={Number(s.dim || 0.2)}
-          showClock={!!s.showClock}
-          showCounter={!!s.showCounter}
-          showTitle={!!s.showTitle}
-        />
-      )}
-    </div>
+  next.settings.folderUrl = String(next.settings.folderUrl || "");
+  next.settings.folderAutoRefreshMinutes = clampNumber(
+    next.settings.folderAutoRefreshMinutes,
+    0,
+    1440,
+    base.settings.folderAutoRefreshMinutes
   );
+
+  next.settings.localFolderPath = String(next.settings.localFolderPath || "");
+
+  next.settings.fadeMs = clampNumber(next.settings.fadeMs, 0, 5000, base.settings.fadeMs);
+
+  // ✅ IMPORTANT: preserve new fit values
+  {
+    const fit = String(next.settings.fit || base.settings.fit);
+    const allowed = new Set(["cover", "contain", "auto", "scale-down"]);
+    next.settings.fit = allowed.has(fit) ? fit : base.settings.fit;
+  }
+
+  next.settings.dim = clampNumber(next.settings.dim, 0, 0.85, base.settings.dim);
+  next.settings.showClock = !!next.settings.showClock;
+  next.settings.showCounter = !!next.settings.showCounter;
+  next.settings.showTitle = next.settings.showTitle !== false;
+
+  {
+    const bg = String(next.settings.backgroundMode || base.settings.backgroundMode);
+    next.settings.backgroundMode = bg === "none" || bg === "blur" ? bg : base.settings.backgroundMode;
+  }
+  next.settings.backgroundBlurPx = clampNumber(
+    next.settings.backgroundBlurPx,
+    0,
+    60,
+    base.settings.backgroundBlurPx
+  );
+  next.settings.backgroundOpacity = clampNumber(
+    next.settings.backgroundOpacity,
+    0,
+    1,
+    base.settings.backgroundOpacity
+  );
+
+  return next;
 }
 
-function ScreensaverOverlay({
-  src,
-  hasPhotos,
-  paused,
-  onTogglePause,
-  onExit,
-  onPrev,
-  onNext,
-  index,
-  total,
-  fadeMs,
-  fit,
-  dim,
-  showClock,
-  showCounter,
-  showTitle,
-}) {
-  const [now, setNow] = useState(() => new Date());
-  const [current, setCurrent] = useState(src || null);
-  const [next, setNext] = useState(null);
-  const [showNext, setShowNext] = useState(false);
-  const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
+function clampNumber(v, min, max, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
 
-  // Compute effective fit mode based on settings and image dimensions
-  const effectiveFit = useMemo(() => {
-    if (!fit) return "cover";
-    if (fit === "scale-down") return "scale-down";
-    if (fit !== "auto") return fit;
+// --- Demo photo sets (stable URLs) ---
+export const DEMO_SETS = {
+  Family: [
+    "https://picsum.photos/id/1027/1600/900",
+    "https://picsum.photos/id/1035/1600/900",
+    "https://picsum.photos/id/1062/1600/900",
+    "https://picsum.photos/id/1074/1600/900",
+    "https://picsum.photos/id/1084/1600/900",
+    "https://picsum.photos/id/1011/1600/900",
+  ],
+  Nature: [
+    "https://picsum.photos/id/1015/1600/900",
+    "https://picsum.photos/id/1016/1600/900",
+    "https://picsum.photos/id/1020/1600/900",
+    "https://picsum.photos/id/1039/1600/900",
+    "https://picsum.photos/id/1043/1600/900",
+    "https://picsum.photos/id/1056/1600/900",
+  ],
+  Cities: [
+    "https://picsum.photos/id/1012/1600/900",
+    "https://picsum.photos/id/1013/1600/900",
+    "https://picsum.photos/id/1014/1600/900",
+    "https://picsum.photos/id/1025/1600/900",
+    "https://picsum.photos/id/1031/1600/900",
+    "https://picsum.photos/id/1049/1600/900",
+  ],
+};
 
-    // Auto mode: intelligently choose based on aspect ratio mismatch
-    const viewRatio = window.innerWidth / window.innerHeight;
-    const imgRatio = imageDimensions.width / imageDimensions.height;
+export function getActivePhotoList(data) {
+  const d = migratePhotosData(data);
+  const { source, demoSet } = d.settings;
 
-    if (!imgRatio || !viewRatio) return "cover";
+  console.log("[photos] getActivePhotoList - source:", source);
 
-    // If ratio mismatch is significant (>15%), use contain; otherwise cover
-    const shouldContain = imgRatio < viewRatio * 0.85 || imgRatio > viewRatio * 1.15;
-    return shouldContain ? "contain" : "cover";
-  }, [fit, imageDimensions]);
+  if (source === "uploaded" && d.uploaded.items.length) {
+    const urls = d.uploaded.items.map((x) => x.dataUrl).filter(Boolean);
+    console.log("[photos] Using uploaded source:", urls.length, "images, first 3:", urls.slice(0, 3));
+    return urls;
+  }
 
-  const fitClass = effectiveFit === "contain" 
-    ? "object-contain" 
-    : effectiveFit === "scale-down"
-    ? "object-scale-down"
-    : "object-cover";
+  // Both "folder" (HTTP) and "local" (Pi filesystem via backend) populate folderCache.urls
+  if ((source === "folder" || source === "local") && d.folderCache.urls.length) {
+    const urls = d.folderCache.urls.filter(Boolean);
+    console.log("[photos] Using folder/local source:", urls.length, "images, first 3:", urls.slice(0, 3));
+    return urls;
+  }
 
-  // Clock tick
-  useEffect(() => {
-    if (!showClock) return;
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, [showClock]);
+  // ONLY use demo set when source === "demo" OR as absolute fallback
+  if (source === "demo") {
+    const list = DEMO_SETS[demoSet] || DEMO_SETS.Family;
+    console.log("[photos] Using demo source:", demoSet, "-", list.length, "images, first 3:", list.slice(0, 3));
+    return list.slice();
+  }
 
-  // Keyboard controls while overlay is active
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key === "Escape") onExit();
-      if (e.key === " " || e.key === "Spacebar") {
-        e.preventDefault();
-        onTogglePause();
-      }
-      if (e.key === "ArrowLeft") onPrev();
-      if (e.key === "ArrowRight") onNext();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onExit, onTogglePause, onPrev, onNext]);
+  // Fallback: if source is local/folder but no URLs cached yet, show empty
+  console.warn("[photos] No images available for source:", source, "- folderCache.urls:", d.folderCache.urls.length);
+  return [];
+}
 
-  // Crossfade on src changes (preload first to prevent flicker)
-  useEffect(() => {
-    if (!hasPhotos || !src) return;
+export function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = arr[i];
+    arr[i] = arr[j];
+    arr[j] = t;
+  }
+  return arr;
+}
 
-    // First paint
-    if (!current) {
-      setCurrent(src);
-      // Load dimensions for auto fit
-      const img = new Image();
-      img.onload = () => {
-        setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight });
-      };
-      img.src = src;
-      return;
-    }
+export function formatMinutes(mins) {
+  const n = Number(mins);
+  if (!Number.isFinite(n)) return "";
+  if (n < 1) return `${Math.round(n * 60)}s`;
+  if (n === 1) return "1 min";
+  return `${Math.round(n)} mins`;
+}
 
-    if (src === current) return;
-
-    let alive = true;
-    const img = new Image();
-    img.onload = () => {
-      if (!alive) return;
-      
-      // Update dimensions for auto fit mode
-      setImageDimensions({ width: img.naturalWidth, height: img.naturalHeight });
-      
-      setNext(src);
-      requestAnimationFrame(() => setShowNext(true));
-
-      const t = setTimeout(() => {
-        if (!alive) return;
-        setCurrent(src);
-        setNext(null);
-        setShowNext(false);
-      }, Math.max(0, Number(fadeMs || 0)));
-
-      img._fadeTimeout = t;
-    };
-    img.onerror = () => {
-      if (!alive) return;
-      setCurrent(src);
-      setNext(null);
-      setShowNext(false);
-    };
-    img.src = src;
-
-    return () => {
-      alive = false;
-      try {
-        if (img._fadeTimeout) clearTimeout(img._fadeTimeout);
-      } catch {
-        // ignore
-      }
-    };
-  }, [src, hasPhotos, fadeMs, current]);
-
-  const timeStr = useMemo(() => {
-    const h = now.getHours();
-    const m = now.getMinutes();
-    const mm = String(m).padStart(2, "0");
-    const hh = String(((h + 11) % 12) + 1);
-    const ap = h >= 12 ? "PM" : "AM";
-    return `${hh}:${mm} ${ap}`;
-  }, [now]);
-
-  return createPortal(
-    <div className="fixed inset-0 z-[999999] bg-black" onClick={onExit} role="button" tabIndex={0}>
-      {/* image layer(s) */}
-      <div className="absolute inset-0">
-        {hasPhotos && current ? (
-          <>
-            <img
-              src={current}
-              alt="Screensaver"
-              className={`w-full h-full ${fitClass} select-none block`}
-              style={{ objectPosition: "center" }}
-              draggable={false}
-            />
-            {next ? (
-              <img
-                src={next}
-                alt="Screensaver next"
-                className={`absolute inset-0 w-full h-full ${fitClass} select-none transition-opacity block`}
-                style={{
-                  objectPosition: "center",
-                  opacity: showNext ? 1 : 0,
-                  transitionDuration: `${Math.max(0, Number(fadeMs || 0))}ms`,
-                }}
-                draggable={false}
-              />
-            ) : null}
-          </>
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-white/70">
-            No photos configured.
-          </div>
-        )}
-
-        <div className="absolute inset-0" style={{ backgroundColor: "black", opacity: dim }} />
-      </div>
-
-      {/* top bar */}
-      <div className="absolute top-0 left-0 right-0 p-4 flex items-center justify-between">
-        <div className="pointer-events-none">
-          {showTitle ? <div className="text-white/75 text-sm">Family Photos</div> : null}
-          {showClock ? <div className="text-white/90 text-2xl font-semibold mt-1">{timeStr}</div> : null}
-          {showCounter && total ? (
-            <div className="text-white/60 text-xs mt-1">
-              {((index % total) + total) % total + 1} / {total}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="pointer-events-auto flex items-center gap-2">
-          <button
-            onClick={(e) => { e.stopPropagation(); onPrev(); }}
-            className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white text-sm inline-flex items-center gap-2"
-            type="button"
-            title="Previous"
-          >
-            <SkipBack size={16} />
-          </button>
-
-          <button
-            onClick={(e) => { e.stopPropagation(); onTogglePause(); }}
-            className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white text-sm inline-flex items-center gap-2"
-            type="button"
-            title={paused ? "Resume" : "Pause"}
-          >
-            {paused ? <Play size={16} /> : <Pause size={16} />}
-            {paused ? "Resume" : "Pause"}
-          </button>
-
-          <button
-            onClick={(e) => { e.stopPropagation(); onNext(); }}
-            className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white text-sm inline-flex items-center gap-2"
-            type="button"
-            title="Next"
-          >
-            <SkipForward size={16} />
-          </button>
-
-          <button
-            onClick={(e) => { e.stopPropagation(); onExit(); }}
-            className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white text-sm inline-flex items-center gap-2"
-            type="button"
-            title="Exit"
-          >
-            <X size={16} />
-          </button>
-        </div>
-      </div>
-
-      {/* bottom hint */}
-      <div className="absolute bottom-0 left-0 right-0 p-6 text-center text-white/60 text-sm pointer-events-none">
-        Tap/click to wake • Esc to exit • ← → to navigate • Space to pause
-      </div>
-    </div>,
-    document.body
+// For folder listing / manifest filtering
+export function isLikelyImagePath(p) {
+  const raw = String(p || "").toLowerCase();
+  const s = raw.split("?")[0].split("#")[0];
+  return (
+    s.endsWith(".jpg") ||
+    s.endsWith(".jpeg") ||
+    s.endsWith(".png") ||
+    s.endsWith(".webp") ||
+    s.endsWith(".gif") ||
+    s.endsWith(".bmp") ||
+    s.endsWith(".avif")
   );
 }

@@ -183,7 +183,7 @@ export default function PhotosSettings({ ctx }) {
       return;
     }
 
-    console.log('[photos/settings] Loading local folder:', localPath);
+    console.log("[photos/settings] Loading local folder:", localPath);
     setBusy(true);
     setFolderTestResult("");
     try {
@@ -201,7 +201,7 @@ export default function PhotosSettings({ ctx }) {
         } catch {
           errorMsg = `Failed to load folder (${response.status}): ${response.statusText || "Unknown error"}`;
         }
-        console.error('[photos/settings] Load error:', errorMsg);
+        console.error("[photos/settings] Load error:", errorMsg);
         setFolderCache({ lastError: errorMsg, fetchedAt: new Date().toISOString() });
         setFolderTestResult(`Error: ${errorMsg}`);
         return;
@@ -210,10 +210,9 @@ export default function PhotosSettings({ ctx }) {
       const responseData = await response.json();
       const urls = Array.isArray(responseData?.images) ? responseData.images : [];
 
-      console.log('[photos/settings] Loaded', urls.length, 'images from', localPath, '- first 3:', urls.slice(0, 3));
+      console.log("[photos/settings] Loaded", urls.length, "images from", localPath, "- first 3:", urls.slice(0, 3));
 
-      // CRITICAL: Save both folderCache AND settings in ONE storeSet call
-      // to prevent race condition where second call overwrites first
+      // Save both folderCache AND settings in ONE storeSet call
       storeSet(ctx, {
         ...data,
         settings: {
@@ -229,11 +228,11 @@ export default function PhotosSettings({ ctx }) {
         },
       });
 
-      console.log('[photos/settings] Saved state - source: local, urls.length:', urls.length);
+      console.log("[photos/settings] Saved state - source: local, urls.length:", urls.length);
       setFolderTestResult(`Loaded ${urls.length} images.`);
     } catch (e) {
       const msg = String(e?.message || e);
-      console.error('[photos/settings] Exception:', msg);
+      console.error("[photos/settings] Exception:", msg);
       setFolderCache({ lastError: msg, fetchedAt: new Date().toISOString() });
       setFolderTestResult(`Error: ${msg}`);
     } finally {
@@ -246,7 +245,7 @@ export default function PhotosSettings({ ctx }) {
     setPickerError("");
     try {
       const response = await fetch(`/api/v1/photos/local/folders?path=${encodeURIComponent(path)}`);
-      
+
       if (!response.ok) {
         let errorMsg;
         try {
@@ -260,8 +259,8 @@ export default function PhotosSettings({ ctx }) {
         return;
       }
 
-      const data = await response.json();
-      setPickerFolders(data.folders || []);
+      const json = await response.json();
+      setPickerFolders(json.folders || []);
       setPickerCurrentPath(path);
     } catch (e) {
       setPickerError(String(e?.message || e));
@@ -295,11 +294,7 @@ export default function PhotosSettings({ ctx }) {
 
       <div className="rounded-2xl bg-white/5 border border-white/15 p-4 space-y-3">
         <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={!!s.enabled}
-            onChange={(e) => saveSettings({ enabled: e.target.checked })}
-          />
+          <input type="checkbox" checked={!!s.enabled} onChange={(e) => saveSettings({ enabled: e.target.checked })} />
           Enable screensaver
         </label>
 
@@ -331,11 +326,7 @@ export default function PhotosSettings({ ctx }) {
         </div>
 
         <label className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={!!s.shuffle}
-            onChange={(e) => saveSettings({ shuffle: e.target.checked })}
-          />
+          <input type="checkbox" checked={!!s.shuffle} onChange={(e) => saveSettings({ shuffle: e.target.checked })} />
           Shuffle photos
         </label>
 
@@ -376,7 +367,9 @@ export default function PhotosSettings({ ctx }) {
               disabled={s.source !== "demo"}
             >
               {demoNames.map((name) => (
-                <option key={name} value={name}>{name}</option>
+                <option key={name} value={name}>
+                  {name}
+                </option>
               ))}
             </select>
           </div>
@@ -393,12 +386,7 @@ export default function PhotosSettings({ ctx }) {
                 placeholder="/opt/family-dashboard-data/photos/memories-1"
                 className="flex-1 rounded-xl bg-white/5 border border-white/15 px-3 py-2 font-mono text-sm text-white"
               />
-              <button
-                className="btn"
-                onClick={openFolderPicker}
-                type="button"
-                disabled={busy}
-              >
+              <button className="btn" onClick={openFolderPicker} type="button" disabled={busy}>
                 Browse…
               </button>
             </div>
@@ -410,19 +398,12 @@ export default function PhotosSettings({ ctx }) {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                className="btn btnPrimary"
-                onClick={onLoadLocalNow}
-                type="button"
-                disabled={busy}
-              >
+              <button className="btn btnPrimary" onClick={onLoadLocalNow} type="button" disabled={busy}>
                 Test & Load
               </button>
             </div>
 
-            {folderTestResult ? (
-              <div className="text-sm opacity-90">{folderTestResult}</div>
-            ) : null}
+            {folderTestResult ? <div className="text-sm opacity-90">{folderTestResult}</div> : null}
 
             {data.folderCache?.lastError ? (
               <div className="text-sm text-red-200/90 bg-red-500/10 rounded-lg px-3 py-2 break-words">
@@ -493,18 +474,9 @@ export default function PhotosSettings({ ctx }) {
 
         <div className="space-y-2">
           <div className="text-xs opacity-70">Upload family photos</div>
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={onPickFiles}
-            disabled={busy}
-            className="block w-full text-sm"
-          />
+          <input type="file" accept="image/*" multiple onChange={onPickFiles} disabled={busy} className="block w-full text-sm" />
 
-          <div className="text-[11px] opacity-60">
-            Uploaded photos are stored inside the dashboard database so they work offline and after refresh.
-          </div>
+          <div className="text-[11px] opacity-60">Uploaded photos are stored inside the dashboard database so they work offline and after refresh.</div>
 
           <div className="flex items-center gap-2">
             <button
@@ -517,19 +489,16 @@ export default function PhotosSettings({ ctx }) {
               Clear uploaded ({data.uploaded.items.length})
             </button>
 
-            <button
-              className="btn btnPrimary"
-              onClick={() => saveSettings({ source: data.uploaded.items.length ? "uploaded" : "demo" })}
-              type="button"
-            >
+            <button className="btn btnPrimary" onClick={() => saveSettings({ source: data.uploaded.items.length ? "uploaded" : "demo" })} type="button">
               Use uploaded
             </button>
           </div>
         </div>
       </div>
 
+      {/* Display / playback options */}
       <div className="rounded-2xl bg-white/5 border border-white/15 p-4 space-y-3">
-        <div className="text-sm font-semibold">Playback & UI</div>
+        <div className="text-sm font-semibold">Playback & Display</div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="space-y-1">
@@ -551,14 +520,55 @@ export default function PhotosSettings({ ctx }) {
               onChange={(e) => saveSettings({ fit: e.target.value })}
               className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-white [&>option]:bg-gray-900 [&>option]:text-white"
             >
-              <option value="cover">Cover (fill screen)</option>
-              <option value="contain">Contain (no crop)</option>
-              <option value="auto">Auto (smart fit per image)</option>
-              <option value="scale-down">Scale-down (no upscale)</option>
+              <option value="cover">Cover (fill screen, crops)</option>
+              <option value="contain">Contain (no crop, bars)</option>
+              <option value="auto">Auto (cover or contain per image)</option>
+              <option value="scale-down">Scale-down (no crop, no upscale)</option>
             </select>
-            <div className="text-[11px] opacity-60">
-              Auto: chooses cover or contain based on image aspect ratio vs screen
-            </div>
+            <div className="text-[11px] opacity-60">Auto will “zoom out” portrait/pano shots that would otherwise be cropped.</div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs opacity-70">When image doesn’t fill screen</div>
+            <select
+              value={s.backgroundMode || "none"}
+              onChange={(e) => saveSettings({ backgroundMode: e.target.value })}
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-white [&>option]:bg-gray-900 [&>option]:text-white"
+            >
+              <option value="none">Black bars</option>
+              <option value="blur">Blurred background fill (recommended)</option>
+            </select>
+            <div className="text-[11px] opacity-60">Blurred background makes the screen look “full” without cropping the main image.</div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs opacity-70">Background blur (px)</div>
+            <input
+              type="number"
+              min={0}
+              max={60}
+              step={1}
+              value={Number(s.backgroundBlurPx ?? 28)}
+              onChange={(e) => saveSettings({ backgroundBlurPx: Number(e.target.value || 0) })}
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+              disabled={(s.backgroundMode || "none") !== "blur"}
+            />
+            <div className="text-[11px] opacity-60">Higher = softer background (only when blurred background is enabled).</div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs opacity-70">Background opacity</div>
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={Number(s.backgroundOpacity ?? 0.55)}
+              onChange={(e) => saveSettings({ backgroundOpacity: Number(e.target.value || 0) })}
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+              disabled={(s.backgroundMode || "none") !== "blur"}
+            />
+            <div className="text-[11px] opacity-60">0 = hidden, 1 = fully visible (only when blurred background is enabled).</div>
           </div>
 
           <div className="space-y-1">
@@ -597,23 +607,25 @@ export default function PhotosSettings({ ctx }) {
       {/* Folder Picker Modal */}
       {showFolderPicker && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowFolderPicker(false)}>
-          <div className="bg-gray-900 border border-white/15 rounded-2xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="bg-gray-900 border border-white/15 rounded-2xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-semibold">Browse Folders on Pi</h3>
-              <button className="text-white/60 hover:text-white" onClick={() => setShowFolderPicker(false)}>✕</button>
+              <button className="text-white/60 hover:text-white" onClick={() => setShowFolderPicker(false)}>
+                ✕
+              </button>
             </div>
 
             {/* Breadcrumb */}
             {pickerCurrentPath && (
-              <div className="mb-3 text-sm font-mono opacity-80 bg-white/5 rounded-lg px-3 py-2">
-                Current: {pickerCurrentPath}
-              </div>
+              <div className="mb-3 text-sm font-mono opacity-80 bg-white/5 rounded-lg px-3 py-2">Current: {pickerCurrentPath}</div>
             )}
 
             {/* Root folders or current folder contents */}
             <div className="flex-1 overflow-y-auto space-y-2 mb-4">
               {!pickerCurrentPath ? (
-                // Show allowed roots
                 <>
                   <div className="text-sm opacity-70 mb-2">Select a root directory:</div>
                   <button
