@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import path from "path";
-import { promises as fsp } from "fs";
+import fs, { promises as fsp } from "fs";
 import storage from "./storage/index.js";
 
 const app = express();
@@ -168,26 +168,41 @@ const SAFE_PHOTO_BASES = [
   "/opt/shared/photos",
 ];
 
-function isSafePath(requestedPath) {
-  if (!requestedPath) return false;
-  
+// Resolve paths safely:
+// - Prefer realpath to account for symlinks/mounts
+// - Fall back to path.resolve if the target doesn't exist yet
+function safeRealPath(p) {
+  const s = String(p || "").trim();
+  if (!s) return "";
   try {
-    const resolved = path.resolve(requestedPath);
-    
-    // Check if path starts with any of the safe bases
-    return SAFE_PHOTO_BASES.some(base => {
-      const normalizedBase = path.resolve(base);
-      return resolved.startsWith(normalizedBase + path.sep) || resolved === normalizedBase;
-    });
+    return fs.realpathSync(s);
   } catch {
-    return false;
+    return path.resolve(s);
   }
+}
+
+// Robust containment check using path.relative (avoids subtle startsWith edge cases)
+// and realpath (handles symlinks properly).
+function isSafePath(requestedPath) {
+  if (!requestedPath || typeof requestedPath !== "string") return false;
+
+  const target = safeRealPath(requestedPath);
+  if (!target) return false;
+
+  return SAFE_PHOTO_BASES.some((base) => {
+    const baseReal = safeRealPath(base);
+    if (!baseReal) return false;
+
+    const rel = path.relative(baseReal, target);
+    // target is inside base if rel is "" OR does not start with ".." and isn't absolute
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  });
 }
 
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"];
 
-function isImageFile(filename) {
-  const ext = path.extname(filename).toLowerCase();
+function isImageFile(filenameOrPath) {
+  const ext = path.extname(String(filenameOrPath || "")).toLowerCase();
   return IMAGE_EXTENSIONS.includes(ext);
 }
 
@@ -208,25 +223,25 @@ function getImageMimeType(filename) {
 app.post("/api/v1/photos/local/list", async (req, res) => {
   try {
     const requestedPath = req.body?.path;
-    
+
     if (!requestedPath || typeof requestedPath !== "string") {
       return res.status(400).json({ ok: false, error: "Missing or invalid 'path' in request body" });
     }
 
     if (!isSafePath(requestedPath)) {
-      return res.status(403).json({ 
-        ok: false, 
-        error: "Path is outside allowed directories. Allowed bases: " + SAFE_PHOTO_BASES.join(", ") 
+      return res.status(403).json({
+        ok: false,
+        error: "Path is outside allowed directories. Allowed bases: " + SAFE_PHOTO_BASES.join(", "),
       });
     }
 
-    const resolved = path.resolve(requestedPath);
+    const resolved = safeRealPath(requestedPath);
 
     // Check if directory exists
     let stat;
     try {
       stat = await fsp.stat(resolved);
-    } catch (e) {
+    } catch {
       return res.status(404).json({ ok: false, error: "Path does not exist" });
     }
 
@@ -234,16 +249,16 @@ app.post("/api/v1/photos/local/list", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Path is not a directory" });
     }
 
-    // Read directory
-    const files = await fsp.readdir(resolved);
-    
-    // Filter for image files only
-    const imageFiles = files
+    // Read directory entries (files only)
+    const entries = await fsp.readdir(resolved, { withFileTypes: true });
+
+    const imageFiles = entries
+      .filter((ent) => ent.isFile())
+      .map((ent) => ent.name)
       .filter(isImageFile)
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
-    // Build URLs that reference our file endpoint
-    const images = imageFiles.map(filename => {
+    const images = imageFiles.map((filename) => {
       const fullPath = path.join(resolved, filename);
       const encoded = encodeURIComponent(fullPath);
       return `/api/v1/photos/local/file?path=${encoded}`;
@@ -265,19 +280,19 @@ app.get("/api/v1/photos/local/file", async (req, res) => {
     }
 
     if (!isSafePath(requestedPath)) {
-      return res.status(403).json({ 
-        ok: false, 
-        error: "Path is outside allowed directories" 
+      return res.status(403).json({
+        ok: false,
+        error: "Path is outside allowed directories",
       });
     }
 
-    const resolved = path.resolve(requestedPath);
+    const resolved = safeRealPath(requestedPath);
 
     // Check if file exists and is a file
     let stat;
     try {
       stat = await fsp.stat(resolved);
-    } catch (e) {
+    } catch {
       return res.status(404).json({ ok: false, error: "File not found" });
     }
 
@@ -285,25 +300,24 @@ app.get("/api/v1/photos/local/file", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Path is not a file" });
     }
 
-    // Verify it's an image file
     if (!isImageFile(resolved)) {
       return res.status(400).json({ ok: false, error: "File is not a supported image type" });
     }
 
-    // Set proper content-type and stream the file
     const mimeType = getImageMimeType(resolved);
     res.setHeader("Content-Type", mimeType);
     res.setHeader("Content-Length", stat.size);
     res.setHeader("Cache-Control", "public, max-age=86400"); // cache for 1 day
 
-    // Stream the file
-    const fileStream = (await import("fs")).createReadStream(resolved);
+    const fileStream = fs.createReadStream(resolved);
     fileStream.pipe(res);
-    
+
     fileStream.on("error", (err) => {
       console.error("[api] /photos/local/file stream error:", err);
       if (!res.headersSent) {
         res.status(500).json({ ok: false, error: "Error streaming file" });
+      } else {
+        res.end();
       }
     });
   } catch (e) {
@@ -323,19 +337,19 @@ app.get("/api/v1/photos/local/folders", async (req, res) => {
     }
 
     if (!isSafePath(requestedPath)) {
-      return res.status(403).json({ 
-        ok: false, 
-        error: "Path is outside allowed directories. Allowed bases: " + SAFE_PHOTO_BASES.join(", ") 
+      return res.status(403).json({
+        ok: false,
+        error: "Path is outside allowed directories. Allowed bases: " + SAFE_PHOTO_BASES.join(", "),
       });
     }
 
-    const resolved = path.resolve(requestedPath);
+    const resolved = safeRealPath(requestedPath);
 
     // Check if directory exists
     let stat;
     try {
       stat = await fsp.stat(resolved);
-    } catch (e) {
+    } catch {
       return res.status(404).json({ ok: false, error: "Path does not exist" });
     }
 
@@ -343,15 +357,13 @@ app.get("/api/v1/photos/local/folders", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Path is not a directory" });
     }
 
-    // Read directory
     const entries = await fsp.readdir(resolved, { withFileTypes: true });
-    
-    // Filter for directories only
+
     const folders = entries
-      .filter(entry => entry.isDirectory())
-      .map(entry => ({
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => ({
         name: entry.name,
-        path: path.join(resolved, entry.name)
+        path: path.join(resolved, entry.name),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
