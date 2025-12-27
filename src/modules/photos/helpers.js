@@ -154,17 +154,31 @@ export function getActivePhotoList(data) {
   const d = migratePhotosData(data);
   const { source, demoSet } = d.settings;
 
+  console.log('[photos] getActivePhotoList - source:', source);
+
   if (source === "uploaded" && d.uploaded.items.length) {
-    return d.uploaded.items.map((x) => x.dataUrl).filter(Boolean);
+    const urls = d.uploaded.items.map((x) => x.dataUrl).filter(Boolean);
+    console.log('[photos] Using uploaded source:', urls.length, 'images, first 3:', urls.slice(0, 3));
+    return urls;
   }
 
   // Both "folder" (HTTP) and "local" (Pi filesystem via backend) populate folderCache.urls
   if ((source === "folder" || source === "local") && d.folderCache.urls.length) {
-    return d.folderCache.urls.filter(Boolean);
+    const urls = d.folderCache.urls.filter(Boolean);
+    console.log('[photos] Using folder/local source:', urls.length, 'images, first 3:', urls.slice(0, 3));
+    return urls;
   }
 
-  const list = DEMO_SETS[demoSet] || DEMO_SETS.Family;
-  return list.slice();
+  // ONLY use demo set when source === "demo" OR as absolute fallback
+  if (source === "demo") {
+    const list = DEMO_SETS[demoSet] || DEMO_SETS.Family;
+    console.log('[photos] Using demo source:', demoSet, '-', list.length, 'images, first 3:', list.slice(0, 3));
+    return list.slice();
+  }
+
+  // Fallback: if source is local/folder but no URLs cached yet, show empty or warning
+  console.warn('[photos] No images available for source:', source, '- folderCache.urls:', d.folderCache.urls.length);
+  return [];
 }
 
 export function shuffleInPlace(arr) {

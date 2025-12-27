@@ -183,6 +183,7 @@ export default function PhotosSettings({ ctx }) {
       return;
     }
 
+    console.log('[photos/settings] Loading local folder:', localPath);
     setBusy(true);
     setFolderTestResult("");
     try {
@@ -200,13 +201,16 @@ export default function PhotosSettings({ ctx }) {
         } catch {
           errorMsg = `Failed to load folder (${response.status}): ${response.statusText || "Unknown error"}`;
         }
+        console.error('[photos/settings] Load error:', errorMsg);
         setFolderCache({ lastError: errorMsg, fetchedAt: new Date().toISOString() });
         setFolderTestResult(`Error: ${errorMsg}`);
         return;
       }
 
-      const data = await response.json();
-      const urls = Array.isArray(data?.images) ? data.images : [];
+      const responseData = await response.json();
+      const urls = Array.isArray(responseData?.images) ? responseData.images : [];
+
+      console.log('[photos/settings] Loaded', urls.length, 'images from', localPath, '- first 3:', urls.slice(0, 3));
 
       setFolderCache({
         urls,
@@ -215,10 +219,11 @@ export default function PhotosSettings({ ctx }) {
       });
 
       setFolderTestResult(`Loaded ${urls.length} images.`);
-      // Persist the working path to settings
+      // Persist the working path to settings - IMPORTANT: set source to "local"
       saveSettings({ source: "local", localFolderPath: localPath });
     } catch (e) {
       const msg = String(e?.message || e);
+      console.error('[photos/settings] Exception:', msg);
       setFolderCache({ lastError: msg, fetchedAt: new Date().toISOString() });
       setFolderTestResult(`Error: ${msg}`);
     } finally {
