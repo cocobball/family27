@@ -165,6 +165,7 @@ app.get("/api/v1/uploads", async (req, res) => {
 const SAFE_PHOTO_BASES = [
   "/home/masri/Pictures",
   "/opt/family-dashboard-data/photos",
+  "/opt/shared/photos",
 ];
 
 function isSafePath(requestedPath) {
@@ -310,6 +311,54 @@ app.get("/api/v1/photos/local/file", async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ ok: false, error: String(e?.message || e) });
     }
+  }
+});
+
+app.get("/api/v1/photos/local/folders", async (req, res) => {
+  try {
+    const requestedPath = req.query?.path;
+
+    if (!requestedPath || typeof requestedPath !== "string") {
+      return res.status(400).json({ ok: false, error: "Missing or invalid 'path' query parameter" });
+    }
+
+    if (!isSafePath(requestedPath)) {
+      return res.status(403).json({ 
+        ok: false, 
+        error: "Path is outside allowed directories. Allowed bases: " + SAFE_PHOTO_BASES.join(", ") 
+      });
+    }
+
+    const resolved = path.resolve(requestedPath);
+
+    // Check if directory exists
+    let stat;
+    try {
+      stat = await fsp.stat(resolved);
+    } catch (e) {
+      return res.status(404).json({ ok: false, error: "Path does not exist" });
+    }
+
+    if (!stat.isDirectory()) {
+      return res.status(400).json({ ok: false, error: "Path is not a directory" });
+    }
+
+    // Read directory
+    const entries = await fsp.readdir(resolved, { withFileTypes: true });
+    
+    // Filter for directories only
+    const folders = entries
+      .filter(entry => entry.isDirectory())
+      .map(entry => ({
+        name: entry.name,
+        path: path.join(resolved, entry.name)
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+    res.json({ folders });
+  } catch (e) {
+    console.error("[api] /photos/local/folders error:", e);
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
   }
 });
 
