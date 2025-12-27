@@ -89,10 +89,7 @@ export default function PhotosSettings({ ctx }) {
 
   const [busy, setBusy] = useState(false);
   const [folderTestResult, setFolderTestResult] = useState("");
-  const [showBrowseModal, setShowBrowseModal] = useState(false);
-  const [browsePath, setBrowsePath] = useState("/opt/shared/photos");
-  const [browseFolders, setBrowseFolders] = useState([]);
-  const [browseError, setBrowseError] = useState("");
+  const [selectedFolderName, setSelectedFolderName] = useState("");
 
   function saveSettings(patch) {
     storeSet(ctx, {
@@ -213,39 +210,35 @@ export default function PhotosSettings({ ctx }) {
     }
   }
 
-  async function loadBrowseFolders(targetPath) {
-    setBrowseError("");
-    try {
-      const response = await fetch(`/api/v1/photos/local/folders?path=${encodeURIComponent(targetPath)}`);
-      
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMsg = errorData?.error || `Request failed (${response.status})`;
-        setBrowseError(errorMsg);
-        setBrowseFolders([]);
-        return;
-      }
+  function onPickLocalFolder(e) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
-      const data = await response.json();
-      const folders = Array.isArray(data?.folders) ? data.folders : [];
-      setBrowseFolders(folders);
-    } catch (e) {
-      const msg = String(e?.message || e);
-      setBrowseError(msg);
-      setBrowseFolders([]);
+    // Get the first file and extract the relative path
+    const firstFile = files[0];
+    const relativePath = firstFile.webkitRelativePath || "";
+    
+    if (!relativePath) {
+      setFolderTestResult("Unable to determine folder name.");
+      return;
     }
-  }
 
-  function onOpenBrowse() {
-    const startPath = s.localFolderPath || "/opt/shared/photos";
-    setBrowsePath(startPath);
-    setShowBrowseModal(true);
-    loadBrowseFolders(startPath);
-  }
+    // Extract top-level folder name (part before first /)
+    const folderName = relativePath.split("/")[0];
+    
+    if (!folderName) {
+      setFolderTestResult("Unable to determine folder name.");
+      return;
+    }
 
-  function onSelectFolder(folderPath) {
-    saveSettings({ localFolderPath: folderPath });
-    setShowBrowseModal(false);
+    // Set the path automatically
+    const fullPath = `/opt/shared/photos/${folderName}`;
+    saveSettings({ localFolderPath: fullPath });
+    setSelectedFolderName(folderName);
+    setFolderTestResult("");
+    
+    // Reset the input
+    e.target.value = "";
   }
 
   const demoNames = Object.keys(DEMO_SETS);
@@ -347,22 +340,38 @@ export default function PhotosSettings({ ctx }) {
         {s.source === "local" ? (
           <div className="mt-3 space-y-2">
             <div className="text-xs opacity-70">Local folder path</div>
-            <div className="flex gap-2">
+            <input
+              value={s.localFolderPath}
+              onChange={(e) => saveSettings({ localFolderPath: e.target.value })}
+              placeholder="/opt/shared/photos/memories-1"
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+            />
+
+            <div className="flex items-center gap-2 flex-wrap">
               <input
-                value={s.localFolderPath}
-                onChange={(e) => saveSettings({ localFolderPath: e.target.value })}
-                placeholder="/opt/shared/photos/memories-1"
-                className="flex-1 rounded-xl bg-white/5 border border-white/15 px-3 py-2"
+                type="file"
+                webkitdirectory=""
+                directory=""
+                multiple
+                onChange={onPickLocalFolder}
+                style={{ display: "none" }}
+                id="local-folder-picker"
               />
               <button
                 className="btn"
-                onClick={onOpenBrowse}
+                onClick={() => document.getElementById("local-folder-picker")?.click()}
                 type="button"
                 disabled={busy}
               >
-                Browse
+                Choose folder…
               </button>
             </div>
+
+            {selectedFolderName ? (
+              <div className="text-xs opacity-80 bg-white/5 rounded-lg px-3 py-2">
+                Selected: <span className="font-semibold">{selectedFolderName}</span> → <span className="font-mono">/opt/shared/photos/{selectedFolderName}</span>
+              </div>
+            ) : null}
 
             <div className="text-[11px] opacity-70 leading-relaxed">
               This is the full path to a folder on the Pi's filesystem. The backend service will scan it for images.
@@ -539,80 +548,6 @@ export default function PhotosSettings({ ctx }) {
           </label>
         </div>
       </div>
-
-      {/* Browse Modal */}
-      {showBrowseModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowBrowseModal(false)}>
-          <div className="bg-neutral-900 border border-white/20 rounded-2xl p-6 w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-4">
-              <div className="text-lg font-semibold">Browse Folders</div>
-              <button className="btn" onClick={() => setShowBrowseModal(false)}>Close</button>
-            </div>
-
-            <div className="mb-3 space-y-2">
-              <div className="text-xs opacity-70">Current path</div>
-              <div className="flex gap-2">
-                <input
-                  value={browsePath}
-                  onChange={(e) => setBrowsePath(e.target.value)}
-                  className="flex-1 rounded-xl bg-white/5 border border-white/15 px-3 py-2"
-                />
-                <button
-                  className="btn btnPrimary"
-                  onClick={() => loadBrowseFolders(browsePath)}
-                  type="button"
-                >
-                  Go
-                </button>
-              </div>
-              <button
-                className="btn text-xs"
-                onClick={() => {
-                  const parent = browsePath.split('/').slice(0, -1).join('/') || '/';
-                  setBrowsePath(parent);
-                  loadBrowseFolders(parent);
-                }}
-                type="button"
-                disabled={browsePath === '/' || browsePath === ''}
-              >
-                ↑ Parent Directory
-              </button>
-            </div>
-
-            {browseError ? (
-              <div className="text-sm text-red-200/80 mb-3">{browseError}</div>
-            ) : null}
-
-            <div className="flex-1 overflow-y-auto space-y-1 min-h-[200px]">
-              {browseFolders.length === 0 ? (
-                <div className="text-sm opacity-60 py-4">No subfolders found</div>
-              ) : (
-                browseFolders.map(folder => (
-                  <div
-                    key={folder.path}
-                    className="flex items-center justify-between p-3 rounded-xl bg-white/5 hover:bg-white/10 cursor-pointer"
-                  >
-                    <div className="flex-1" onClick={() => {
-                      setBrowsePath(folder.path);
-                      loadBrowseFolders(folder.path);
-                    }}>
-                      <div className="font-mono text-sm">📁 {folder.name}</div>
-                      <div className="text-xs opacity-60">{folder.path}</div>
-                    </div>
-                    <button
-                      className="btn btnPrimary ml-2"
-                      onClick={() => onSelectFolder(folder.path)}
-                      type="button"
-                    >
-                      Select
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

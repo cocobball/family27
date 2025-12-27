@@ -16,12 +16,12 @@ export function defaultPhotosData() {
     version: 2,
     settings: {
       enabled: false,
-      idleMinutes: 5,         // minutes of inactivity before screensaver starts
-      slideSeconds: 12,       // seconds per photo
+      idleMinutes: 5, // minutes of inactivity before screensaver starts
+      slideSeconds: 12, // seconds per photo
       shuffle: true,
-      touchToEnable: false,   // show a "Start screensaver" button in the module card
+      touchToEnable: false, // show a "Start screensaver" button in the module card
 
-      source: "demo",         // "demo" | "uploaded" | "folder" | "local"
+      source: "demo", // "demo" | "uploaded" | "folder" | "local"
       demoSet: "Family",
 
       // "folder" source (HTTP directory listing or JSON manifest)
@@ -31,16 +31,16 @@ export function defaultPhotosData() {
       folderAutoRefreshMinutes: 0, // 0 = never
 
       // "local" source (local filesystem folder on the Pi)
-      // Example: /home/masri/Pictures/memories-1
+      // Example: /opt/shared/photos/memories-1
       localFolderPath: "",
 
       // UI / playback
-      fadeMs: 700,            // crossfade duration (ms)
-      fit: "cover",           // "cover" | "contain"
-      dim: 0.20,              // 0..0.85 black overlay
+      fadeMs: 700, // crossfade duration (ms)
+      fit: "cover", // "cover" | "contain"
+      dim: 0.2, // 0..0.85 black overlay
       showClock: true,
       showCounter: true,
-      showTitle: true,        // show "Family Photos" label
+      showTitle: true, // show "Family Photos" label
     },
 
     // "uploaded" source
@@ -50,11 +50,11 @@ export function defaultPhotosData() {
       ],
     },
 
-    // "folder" source cache
+    // Cache used by BOTH "folder" and "local" sources
     folderCache: {
-      urls: [],               // resolved image URLs
-      fetchedAt: null,        // ISO timestamp
-      lastError: "",          // string
+      urls: [], // resolved image URLs
+      fetchedAt: null, // ISO timestamp
+      lastError: "", // string
     },
   };
 }
@@ -62,7 +62,9 @@ export function defaultPhotosData() {
 export function migratePhotosData(raw) {
   const base = defaultPhotosData();
   const d = raw && typeof raw === "object" ? raw : {};
+  // keep for forward compatibility, even if unused here
   const version = Number(d.version || 0);
+  void version;
 
   // v0/v1 -> v2: ensure shape + new settings
   const next = {
@@ -93,6 +95,7 @@ export function migratePhotosData(raw) {
   next.settings.source = src === "uploaded" || src === "folder" || src === "local" ? src : "demo";
 
   next.settings.demoSet = String(next.settings.demoSet || base.settings.demoSet);
+
   next.settings.folderUrl = String(next.settings.folderUrl || "");
   next.settings.folderAutoRefreshMinutes = clampNumber(
     next.settings.folderAutoRefreshMinutes,
@@ -100,6 +103,7 @@ export function migratePhotosData(raw) {
     1440,
     base.settings.folderAutoRefreshMinutes
   );
+
   next.settings.localFolderPath = String(next.settings.localFolderPath || "");
 
   next.settings.fadeMs = clampNumber(next.settings.fadeMs, 0, 5000, base.settings.fadeMs);
@@ -158,7 +162,6 @@ export function getActivePhotoList(data) {
   if ((source === "folder" || source === "local") && d.folderCache.urls.length) {
     return d.folderCache.urls.filter(Boolean);
   }
-
 
   const list = DEMO_SETS[demoSet] || DEMO_SETS.Family;
   return list.slice();
