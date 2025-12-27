@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { defaultPhotosData, migratePhotosData, DEMO_SETS, isLikelyImagePath } from "./helpers.js";
 
 // --- ctx compatibility ---
@@ -97,9 +97,9 @@ export default function PhotosSettings({ ctx }) {
   const [pickerError, setPickerError] = useState("");
 
   // Sync localFolderPath state with settings when source changes
-  useMemo(() => {
+  useEffect(() => {
     setLocalFolderPath(s.localFolderPath || "");
-  }, [s.source]);
+  }, [s.source, s.localFolderPath]);
 
   function saveSettings(patch) {
     storeSet(ctx, {
