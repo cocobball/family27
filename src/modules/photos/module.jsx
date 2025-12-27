@@ -135,8 +135,9 @@ export default function PhotosModule({ ctx }) {
   const photos = useMemo(() => {
     const list = getActivePhotoList(data);
     if (s.shuffle) shuffleInPlace(list);
+    console.log('[photos/module] Photo list built - source:', s.source, 'localFolderPath:', s.localFolderPath, 'urls.length:', list.length, 'lastError:', data.folderCache?.lastError || '(none)');
     return list;
-  }, [data, s.shuffle]);
+  }, [data, s.shuffle, s.source, s.localFolderPath]);
 
   const total = photos.length;
   const currentSrc = total ? photos[index % total] : null;
@@ -158,10 +159,17 @@ export default function PhotosModule({ ctx }) {
 
   async function refreshFolderList({ silent } = { silent: false }) {
     if (refreshInFlightRef.current) return;
+    // ONLY refresh for 'folder' source (HTTP URLs), NOT for 'local' (filesystem)
     if (s.source !== "folder") return;
 
     const folderUrl = s.folderUrl;
     if (!String(folderUrl || "").trim()) return;
+    
+    // Safety: Don't try to fetch filesystem paths
+    if (folderUrl.startsWith('/')) {
+      console.warn('[photos] Skipping refresh - folderUrl appears to be filesystem path:', folderUrl);
+      return;
+    }
 
     refreshInFlightRef.current = true;
     try {

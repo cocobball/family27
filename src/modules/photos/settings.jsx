@@ -212,15 +212,25 @@ export default function PhotosSettings({ ctx }) {
 
       console.log('[photos/settings] Loaded', urls.length, 'images from', localPath, '- first 3:', urls.slice(0, 3));
 
-      setFolderCache({
-        urls,
-        fetchedAt: new Date().toISOString(),
-        lastError: "",
+      // CRITICAL: Save both folderCache AND settings in ONE storeSet call
+      // to prevent race condition where second call overwrites first
+      storeSet(ctx, {
+        ...data,
+        settings: {
+          ...data.settings,
+          source: "local",
+          localFolderPath: localPath,
+          folderUrl: "", // Clear folderUrl when using local source
+        },
+        folderCache: {
+          urls,
+          fetchedAt: new Date().toISOString(),
+          lastError: "",
+        },
       });
 
+      console.log('[photos/settings] Saved state - source: local, urls.length:', urls.length);
       setFolderTestResult(`Loaded ${urls.length} images.`);
-      // Persist the working path to settings - IMPORTANT: set source to "local"
-      saveSettings({ source: "local", localFolderPath: localPath });
     } catch (e) {
       const msg = String(e?.message || e);
       console.error('[photos/settings] Exception:', msg);
