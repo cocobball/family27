@@ -168,7 +168,7 @@ export default function PhotosSettings({ ctx }) {
   async function onLoadLocalNow() {
     const localPath = String(s.localFolderPath || "").trim();
     if (!localPath) {
-      setFolderTestResult("Error: Enter a local folder path first.");
+      setFolderTestResult("Enter a local folder path first.");
       return;
     }
 
@@ -182,8 +182,13 @@ export default function PhotosSettings({ ctx }) {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMsg = errorData?.error || `Request failed (${response.status})`;
+        let errorMsg;
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData?.error || `Request failed (${response.status})`;
+        } catch {
+          errorMsg = `Failed to load folder (${response.status}): ${response.statusText || "Unknown error"}`;
+        }
         setFolderCache({ lastError: errorMsg, fetchedAt: new Date().toISOString() });
         setFolderTestResult(`Error: ${errorMsg}`);
         return;
@@ -199,7 +204,8 @@ export default function PhotosSettings({ ctx }) {
       });
 
       setFolderTestResult(`Loaded ${urls.length} images.`);
-      saveSettings({ source: "local" });
+      // Persist the working path to settings
+      saveSettings({ source: "local", localFolderPath: localPath });
     } catch (e) {
       const msg = String(e?.message || e);
       setFolderCache({ lastError: msg, fetchedAt: new Date().toISOString() });
@@ -309,10 +315,10 @@ export default function PhotosSettings({ ctx }) {
           <div className="mt-3 space-y-2">
             <div className="text-xs opacity-70">Local folder path</div>
             <input
-              value={s.localFolderPath || "/opt/family-dashboard-data/photos/memories-1"}
+              value={s.localFolderPath !== undefined && s.localFolderPath !== null && s.localFolderPath !== "" ? s.localFolderPath : "/opt/family-dashboard-data/photos/memories-1"}
               onChange={(e) => saveSettings({ localFolderPath: e.target.value })}
               placeholder="/opt/family-dashboard-data/photos/memories-1"
-              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 font-mono text-sm"
+              className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 font-mono text-sm text-white"
             />
 
             <div className="text-[11px] opacity-70 leading-relaxed">
