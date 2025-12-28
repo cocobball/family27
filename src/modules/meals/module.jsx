@@ -100,7 +100,22 @@ function EmptyHint({ children }) {
   return <div className="text-sm opacity-70">{children}</div>;
 }
 
+function useContainerWidth(ref) {
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) setW(e.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return w;
+}
+
 export default function MealsModule({ ctx }) {
+  const containerRef = useRef(null);
   const fileRef = useRef(null);
 
   // --- Load and persist data using unified pattern ---
@@ -191,6 +206,11 @@ export default function MealsModule({ ctx }) {
   // Grocery
   const [groceryDraft, setGroceryDraft] = useState("");
   const [grocerySearch, setGrocerySearch] = useState("");
+
+  // Compact mode detection and slot editor state
+  const containerWidth = useContainerWidth(containerRef);
+  const isCompact = containerWidth > 0 && containerWidth < 900;
+  const [compactSlotEditor, setCompactSlotEditor] = useState(null); // { day, slot }
 
   const recipesById = useMemo(() => {
     const m = new Map();
@@ -585,7 +605,7 @@ export default function MealsModule({ ctx }) {
           <div>
             <div className="font-semibold text-lg">Meals</div>
             <div className="text-xs opacity-70">
-              Planner • recipes • receipts • grocery list
+              Planner • recipes • grocery list
             </div>
           </div>
         </div>
@@ -615,16 +635,169 @@ export default function MealsModule({ ctx }) {
       <div className="flex flex-wrap gap-2">
         <IconTab icon={CalendarDays} label="Planner" active={tab === "planner"} onClick={() => setTab("planner")} />
         <IconTab icon={BookOpen} label="Recipes" active={tab === "recipes"} onClick={() => setTab("recipes")} />
-        <IconTab icon={Receipt} label="Receipts" active={tab === "receipts"} onClick={() => setTab("receipts")} />
         <IconTab icon={ShoppingCart} label="Grocery" active={tab === "grocery"} onClick={() => setTab("grocery")} />
       </div>
 
       {/* Content */}
-      <div className="flex-1 min-h-0 overflow-auto pr-1">
-        {/* --- REST OF YOUR UI EXACTLY AS BEFORE --- */}
-        {/* (unchanged content below; kept identical to your version) */}
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-auto pr-1">
+        {tab === "planner" && isCompact && (
+          <Section
+            title="Week Planner"
+            right={
+              <div className="flex items-center gap-2">
+                <button className="iconBtn" onClick={() => moveWeek(-1)} title="Previous week">
+                  <ChevronLeft size={18} />
+                </button>
+                <button className="btn" onClick={() => jumpToDate(new Date().toISOString().slice(0, 10))} title="Jump to this week">
+                  Today
+                </button>
+                <button className="iconBtn" onClick={() => moveWeek(1)} title="Next week">
+                  <ChevronRight size={18} />
+                </button>
+              </div>
+            }
+          >
+            <div className="text-xs opacity-70 mb-3">{weekLabel}</div>
 
-        {tab === "planner" && (
+            {/* Compact Week Grid */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr>
+                    <th className="text-left p-2 opacity-70"></th>
+                    {DAYS.map((d) => (
+                      <th key={d} className="text-center p-2 opacity-70 font-medium">
+                        {d.slice(0, 3)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {SLOTS.map((slot) => (
+                    <tr key={slot.key}>
+                      <td className="p-2 opacity-70 font-medium">{slot.label}</td>
+                      {DAYS.map((day) => {
+                        const dayData = weekDays[day] || {};
+                        const slotData = dayData[slot.key];
+                        let label = "—";
+                        if (slotData) {
+                          if (slotData.type === "text") label = slotData.text;
+                          else {
+                            const r = recipesById.get(slotData.id);
+                            label = r?.name || "?";
+                          }
+                        }
+                        const isEditing = compactSlotEditor?.day === day && compactSlotEditor?.slot === slot.key;
+                        return (
+                          <td key={day} className="p-1">
+                            <button
+                              onClick={() => setCompactSlotEditor({ day, slot: slot.key })}
+                              className={`w-full px-2 py-1 rounded-lg text-xs truncate ${
+                                isEditing
+                                  ? "bg-white/20 border border-white/30"
+                                  : "bg-white/5 border border-white/10 hover:bg-white/10"
+                              }`}
+                              title={label}
+                            >
+                              {label === "—" ? "+" : label}
+                            </button>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Inline Slot Editor */}
+            {compactSlotEditor && (
+              <div className="mt-3 p-3 rounded-2xl bg-white/10 border border-white/15">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-semibold text-sm">
+                    {compactSlotEditor.day} • {SLOTS.find(s => s.key === compactSlotEditor.slot)?.label}
+                  </div>
+                  <button
+                    className="iconBtn !w-6 !h-6"
+                    onClick={() => setCompactSlotEditor(null)}
+                    title="Close"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                {(() => {
+                  const dayData = weekDays[compactSlotEditor.day] || {};
+                  const slotData = dayData[compactSlotEditor.slot];
+                  const selectedId = slotData?.type === "recipe" ? slotData.id : "";
+                  const selectedText = slotData?.type === "text" ? slotData.text : "";
+                  
+                  const applySlot = (val) => {
+                    const prevActiveDay = activeDay;
+                    setActiveDay(compactSlotEditor.day);
+                    setSlot(compactSlotEditor.slot, val);
+                    setActiveDay(prevActiveDay);
+                  };
+
+                  return (
+                    <div className="space-y-2">
+                      <select
+                        value={selectedId}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          applySlot(v ? { type: "recipe", id: v } : null);
+                        }}
+                        className="meals-module-select w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                      >
+                        <option value="">Select recipe…</option>
+                        {data.recipes.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        value={selectedText}
+                        onChange={(e) => applySlot(e.target.value ? { type: "text", text: e.target.value } : null)}
+                        placeholder="Or quick text (e.g., leftovers)"
+                        className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                      />
+                      <button
+                        className="btn w-full"
+                        onClick={() => {
+                          applySlot(null);
+                          setCompactSlotEditor(null);
+                        }}
+                      >
+                        <X size={14} /> Clear
+                      </button>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Grocery Summary */}
+            <div className="mt-3 p-3 rounded-2xl bg-white/5 border border-white/10">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold">Grocery Preview</div>
+                <button className="btn !px-2 !py-1 !text-xs btnPrimary" onClick={addWeekGroceries}>
+                  <ShoppingCart size={14} /> Add to Grocery
+                </button>
+              </div>
+              <div className="text-xs opacity-70 space-y-1">
+                {getGroceryLinesForWeek().slice(0, 6).map((line, i) => (
+                  <div key={i}>• {line}</div>
+                ))}
+                {getGroceryLinesForWeek().length > 6 && (
+                  <div className="opacity-50">+ {getGroceryLinesForWeek().length - 6} more…</div>
+                )}
+                {getGroceryLinesForWeek().length === 0 && <div className="opacity-50">No ingredients yet</div>}
+              </div>
+            </div>
+          </Section>
+        )}
+
+        {tab === "planner" && !isCompact && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
             {/* Left: day list */}
             <Section
@@ -940,129 +1113,6 @@ export default function MealsModule({ ctx }) {
                 <EmptyHint>
                   {recipeSearch ? "No recipes match your search." : "No recipes yet. Click 'New Recipe' to start."}
                 </EmptyHint>
-              )}
-            </div>
-          </Section>
-        )}
-
-        {tab === "receipts" && (
-          <Section
-            title="Receipts"
-            right={
-              <button className="btn btnPrimary" onClick={startNewReceipt}>
-                <Plus size={16} /> New Receipt
-              </button>
-            }
-          >
-            {editingReceiptId !== null || data.receipts.length === 0 ? (
-              <div className="rounded-2xl p-4 bg-white/5 border border-white/10 space-y-3">
-                <div className="font-semibold">{editingReceiptId ? "Edit Receipt" : "New Receipt"}</div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs opacity-70 mb-1">Store</div>
-                    <input
-                      value={receiptStore}
-                      onChange={(e) => setReceiptStore(e.target.value)}
-                      placeholder="Whole Foods"
-                      className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <div className="text-xs opacity-70 mb-1">Date</div>
-                    <input
-                      type="date"
-                      value={receiptDate}
-                      onChange={(e) => setReceiptDate(e.target.value)}
-                      className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs opacity-70 mb-1">Items (one per line)</div>
-                  <textarea
-                    value={receiptItemsText}
-                    onChange={(e) => setReceiptItemsText(e.target.value)}
-                    placeholder="Milk&#10;Bread&#10;Eggs"
-                    className="w-full min-h-32 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm font-mono"
-                  />
-                </div>
-
-                <div>
-                  <div className="text-xs opacity-70 mb-1">Notes</div>
-                  <textarea
-                    value={receiptNotes}
-                    onChange={(e) => setReceiptNotes(e.target.value)}
-                    placeholder="Used coupon..."
-                    className="w-full min-h-20 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
-                  />
-                </div>
-
-                <div>
-                  <div className="text-xs opacity-70 mb-1">Total</div>
-                  <input
-                    value={receiptTotal}
-                    onChange={(e) => setReceiptTotal(e.target.value)}
-                    placeholder="$45.67"
-                    className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
-                  />
-                </div>
-
-                <div className="flex gap-2">
-                  <button className="btn btnPrimary" onClick={saveReceipt}>
-                    <Check size={16} /> {editingReceiptId ? "Save" : "Add"}
-                  </button>
-                  {editingReceiptId && (
-                    <>
-                      <button className="btn" onClick={() => deleteReceipt(editingReceiptId)}>
-                        <Trash2 size={16} /> Delete
-                      </button>
-                      <button className="btn" onClick={() => setEditingReceiptId(null)}>
-                        <X size={16} /> Cancel
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="mt-3 space-y-2">
-              {data.receipts.length ? (
-                data.receipts.map((rec) => (
-                  <div key={rec.id} className="rounded-2xl p-3 bg-white/5 border border-white/10">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold">{rec.store || "(No store)"}</div>
-                        <div className="text-xs opacity-70">{rec.date || "No date"}</div>
-                        {rec.total && <div className="text-sm opacity-80 mt-1">Total: {rec.total}</div>}
-                      </div>
-                      <div className="flex gap-2">
-                        <button className="iconBtn" onClick={() => editReceipt(rec)} title="Edit">
-                          <Pencil size={16} />
-                        </button>
-                        <button
-                          className="iconBtn"
-                          onClick={() => addReceiptToGroceries(rec.id)}
-                          title="Add items to grocery"
-                        >
-                          <ShoppingCart size={16} />
-                        </button>
-                        <button className="iconBtn" onClick={() => deleteReceipt(rec.id)} title="Delete">
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </div>
-                    {rec.itemsText && (
-                      <div className="mt-2 text-xs opacity-70 whitespace-pre-wrap max-h-20 overflow-auto rounded-xl p-2 bg-black/10">
-                        {rec.itemsText}
-                      </div>
-                    )}
-                    {rec.notes && <div className="mt-2 text-sm opacity-80">{rec.notes}</div>}
-                  </div>
-                ))
-              ) : (
-                <EmptyHint>No receipts yet. Click 'New Receipt' to add one.</EmptyHint>
               )}
             </div>
           </Section>
