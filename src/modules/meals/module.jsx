@@ -70,24 +70,19 @@ function useModuleData(ctx, defaultFn) {
 // ctx compatibility helpers
 // -----------------------------
 function getShared(ctx) {
-  return ctx.shared || ctx.sharedState;
+  return ctx.sharedState || ctx.shared;
 }
 function sharedSet(ctx, patchOrKey, maybeVal) {
   const shared = getShared(ctx);
   if (!shared) return;
 
-  // Pattern A: shared.set({ ... })
   if (typeof shared.set === "function") {
+    // If called with (ctx, "key", value), convert to object
     if (typeof patchOrKey === "string") {
-      // support shared.set("key", value) if implemented
-      try {
-        return shared.set(patchOrKey, maybeVal);
-      } catch {
-        // fall through
-      }
+      return shared.set({ [patchOrKey]: maybeVal });
     }
-    // Merge pattern: shared.set(prev => ({...(prev||{}), ...patch}))
-    return shared.set((prev) => ({ ...(prev || {}), ...(patchOrKey || {}) }));
+    // Otherwise pass object directly (no merge function)
+    return shared.set(patchOrKey || {});
   }
 }
 
