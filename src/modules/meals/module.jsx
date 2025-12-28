@@ -306,7 +306,7 @@ export default function MealsModule({ ctx }) {
 
   // --- Recipe CRUD ---
   const startNewRecipe = () => {
-    setEditingRecipeId(null);
+    setEditingRecipeId(""); // Use empty string to indicate "new recipe" mode
     setRecipeName("");
     setRecipeIngredientsText("");
     setRecipeNotes("");
@@ -839,7 +839,7 @@ export default function MealsModule({ ctx }) {
 
             {editingRecipeId !== null || recipeSearch === "" && data.recipes.length === 0 ? (
               <div className="rounded-2xl p-4 bg-white/5 border border-white/10 space-y-3">
-                <div className="font-semibold">{editingRecipeId ? "Edit Recipe" : "New Recipe"}</div>
+                <div className="font-semibold">{editingRecipeId && editingRecipeId !== "" ? "Edit Recipe" : "New Recipe"}</div>
 
                 <div>
                   <div className="text-xs opacity-70 mb-1">Name</div>
@@ -886,9 +886,9 @@ export default function MealsModule({ ctx }) {
 
                 <div className="flex gap-2">
                   <button className="btn btnPrimary" onClick={saveRecipe}>
-                    <Check size={16} /> {editingRecipeId ? "Save" : "Add"}
+                    <Check size={16} /> {editingRecipeId && editingRecipeId !== "" ? "Save" : "Add"}
                   </button>
-                  {editingRecipeId && (
+                  {editingRecipeId && editingRecipeId !== "" && (
                     <>
                       <button className="btn" onClick={() => deleteRecipe(editingRecipeId)}>
                         <Trash2 size={16} /> Delete
