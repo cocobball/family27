@@ -556,6 +556,7 @@ export default function ChoresModule({ ctx }) {
   const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helperChooser, setHelperChooser] = useState(null);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
 
   useEffect(() => {
     const handler = (payload) => {
@@ -595,18 +596,7 @@ export default function ChoresModule({ ctx }) {
   );
 
   const childCompleteHelperFromWidget = (task) => {
-    const s = syncHelperExpiry(data);
-    const nowTask = (s.helperTasks || []).find((t) => t.id === task.id);
-    if (!nowTask || nowTask.status !== "active") return;
-
-    const options = nowTask.assignedTo || [];
-    if (options.length <= 1) {
-      const next = awardHelperTask(ctx, s, nowTask, options);
-      patch(next);
-      return;
-    }
-
-    setHelperChooser({ taskId: nowTask.id, options });
+    setPendingConfirm({ type: "helper", task });
   };
 
   const confirmHelperChooserFromWidget = (selectedKidIds) => {
@@ -798,7 +788,11 @@ export default function ChoresModule({ ctx }) {
                       <div key={c.id} className="flex items-center gap-2 text-sm opacity-90">
                         <button
                           type="button"
-                          onClick={() => markDoneChild(cardModel.weekKey, c)}
+                          onClick={() => {
+                            if (!c.done) {
+                              setPendingConfirm({ type: "chore", weekKey: cardModel.weekKey, chore: c });
+                            }
+                          }}
                           className="flex items-center gap-2 w-full text-left"
                         >
                           <span className="inline-block w-4">{c.done ? "✅" : "⬜"}</span>
@@ -877,6 +871,42 @@ export default function ChoresModule({ ctx }) {
           onConfirm={confirmHelperChooserFromWidget}
         />
       ) : null}
+
+      {pendingConfirm ? (
+        <ConfirmCompleteModal
+          title="Confirm completion"
+          subtitle={
+            pendingConfirm.type === "chore"
+              ? pendingConfirm.chore.name
+              : pendingConfirm.task.title
+          }
+          details={
+            pendingConfirm.type === "chore"
+              ? `Assigned to: ${pendingConfirm.chore.person}`
+              : `Assigned to: ${(pendingConfirm.task.assignedTo || []).join(", ")}`
+          }
+          onCancel={() => setPendingConfirm(null)}
+          onConfirm={() => {
+            if (pendingConfirm.type === "chore") {
+              markDoneChild(pendingConfirm.weekKey, pendingConfirm.chore);
+              setPendingConfirm(null);
+            } else if (pendingConfirm.type === "helper") {
+              const s = syncHelperExpiry(data);
+              const nowTask = (s.helperTasks || []).find((t) => t.id === pendingConfirm.task.id);
+              if (nowTask && nowTask.status === "active") {
+                const options = nowTask.assignedTo || [];
+                if (options.length <= 1) {
+                  const next = awardHelperTask(ctx, s, nowTask, options);
+                  patch(next);
+                } else {
+                  setHelperChooser({ taskId: nowTask.id, options });
+                }
+              }
+              setPendingConfirm(null);
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -896,6 +926,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
   const doneMap = normalized.doneByWeek?.[weekKey] || {};
 
   const [parentPanelOpen, setParentPanelOpen] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
 
   // Add weekly chore form (parent)
   const [newName, setNewName] = useState("");
@@ -1548,8 +1579,11 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
                                   <div className="flex items-center gap-3 flex-1 min-w-0">
                                     <button
                                       onClick={() => {
-                                        if (!done) onChildMarkDone(weekKey, c);
-                                        else setParentPanelOpen(true);
+                                        if (!done) {
+                                          setPendingConfirm({ type: "chore", weekKey, chore: c });
+                                        } else {
+                                          setParentPanelOpen(true);
+                                        }
                                       }}
                                       className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
                                         done ? "bg-green-500 border-green-500" : "border-white/40 hover:border-white/70"
@@ -1617,7 +1651,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
                             </div>
 
                             <button
-                              onClick={() => childCompleteHelper(t)}
+                              onClick={() => setPendingConfirm({ type: "helper", task: t })}
                               className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
                             >
                               Complete
@@ -1673,6 +1707,42 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
           </div>
         </div>
       </div>
+
+      {pendingConfirm ? (
+        <ConfirmCompleteModal
+          title="Confirm completion"
+          subtitle={
+            pendingConfirm.type === "chore"
+              ? pendingConfirm.chore.name
+              : pendingConfirm.task.title
+          }
+          details={
+            pendingConfirm.type === "chore"
+              ? `Assigned to: ${pendingConfirm.chore.person}`
+              : `Assigned to: ${(pendingConfirm.task.assignedTo || []).join(", ")}`
+          }
+          onCancel={() => setPendingConfirm(null)}
+          onConfirm={() => {
+            if (pendingConfirm.type === "chore") {
+              onChildMarkDone(pendingConfirm.weekKey, pendingConfirm.chore);
+              setPendingConfirm(null);
+            } else if (pendingConfirm.type === "helper") {
+              const s = syncHelperExpiry(normalized);
+              const nowTask = (s.helperTasks || []).find((t) => t.id === pendingConfirm.task.id);
+              if (nowTask && nowTask.status === "active") {
+                const options = nowTask.assignedTo || [];
+                if (options.length <= 1) {
+                  const next = awardHelperTask(ctx, s, nowTask, options);
+                  patch(next);
+                } else {
+                  setHelperChooser({ taskId: nowTask.id, options });
+                }
+              }
+              setPendingConfirm(null);
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 
@@ -1726,6 +1796,34 @@ function HelperChooserModal({ task, options, onCancel, onConfirm }) {
         </div>
 
         <div className="text-white/40 text-xs mt-3">If you pick both, both get the rewards.</div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function ConfirmCompleteModal({ title, subtitle, details, onCancel, onConfirm }) {
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="max-w-md w-full rounded-3xl bg-white/10 border border-white/20 p-5">
+        <div className="text-white text-lg font-semibold">{title}</div>
+        <div className="text-white/70 text-sm mt-1">{subtitle}</div>
+        {details ? <div className="text-white/60 text-sm mt-2">{details}</div> : null}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 text-sm"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-sm"
+          >
+            Confirm
+          </button>
+        </div>
       </div>
     </div>,
     document.body

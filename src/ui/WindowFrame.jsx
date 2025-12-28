@@ -199,9 +199,6 @@ export default function WindowFrame({
             </div>
             <div className="min-w-0">
               <div className="font-semibold leading-tight truncate">{Title}</div>
-              <div className="text-xs opacity-70 leading-tight truncate">
-                {previewColumn ? previewColumn.toUpperCase() : (win.column?.toUpperCase?.() ?? "")}
-              </div>
             </div>
           </div>
 
@@ -249,7 +246,7 @@ export default function WindowFrame({
           </div>
         </div>
       </div>
-windowBody 
+
       {!win.minimized && (
         <div className="h-[calc(100%-4rem)] p-4" style={{ touchAction: 'auto' }}>
           <div className="h-full rounded-2xl" style={{ background: "rgba(0,0,0,0.12)", border: "1px solid var(--border)" }}>
