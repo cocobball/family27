@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardList, X, Plus, Settings, Check, Trash2 } from "lucide-react";
 import {
@@ -75,63 +75,43 @@ function sharedSet(ctx, patchOrKey, maybeVal) {
 }
 
 // -----------------------------
-// Storage helpers
+// Calendar-style module storage hook (server-backed)
 // -----------------------------
-function getModuleId() {
-  return "chores";
-}
-
-function storeGet(ctx, fallbackValue) {
-  const s = ctx?.store;
-  const moduleId = getModuleId();
-  if (s?.getModuleData) return s.getModuleData(moduleId, fallbackValue);
-  if (s?.get) return s.get(fallbackValue);
-  return fallbackValue;
-}
-
-function storeSet(ctx, nextData) {
-  const s = ctx?.store;
-  const moduleId = getModuleId();
-  if (s?.setModuleData) return s.setModuleData(moduleId, nextData);
-  if (s?.set) return s.set(nextData);
-}
-
-// -----------------------------
-// Calendar-style module storage hook
-// -----------------------------
+// IMPORTANT:
+// - Use ctx.store.get/set ONLY (module-scoped state) for persistence.
+// - Do not use getModuleData/setModuleData for this module’s own data.
+// - Do not auto-write (no "save on render" effects).
 function useModuleData(ctx, defaultFn) {
-  const fallback = useMemo(() => defaultFn(), [defaultFn]);
-  const [localData, setLocalData] = useState(() => storeGet(ctx, fallback));
+  const [rev, setRev] = useState(0);
 
+  // Ensure defaultFn() is a VALUE (not a function) passed to ctx.store.get
+  const data = useMemo(() => ctx.store.get(defaultFn()), [ctx, defaultFn, rev]);
+
+  // Keep in sync with server/hydration updates if store supports subscribe
   useEffect(() => {
     const s = ctx?.store;
-    const read = () => setLocalData(storeGet(ctx, fallback));
-    read();
+    if (!s || typeof s.subscribe !== "function") return;
+    const unsub = s.subscribe(() => setRev((r) => r + 1));
+    return () => unsub?.();
+  }, [ctx]);
 
-    // If the store supports subscribe, keep in sync with server/hydration updates
-    if (typeof s?.subscribe === "function") {
-      const unsub = s.subscribe(() => read());
-      return () => unsub?.();
-    }
-  }, [ctx, fallback]);
+  const patch = useCallback(
+    (partialOrFullNext) => {
+      const cur = ctx.store.get(defaultFn());
 
-  const patch = (partialOrFullNext) => {
-    const cur = storeGet(ctx, fallback);
-    const next =
-      partialOrFullNext && typeof partialOrFullNext === "object" && partialOrFullNext.version
-        ? partialOrFullNext
-        : { ...(cur || {}), ...(partialOrFullNext || {}) };
+      const next =
+        partialOrFullNext && typeof partialOrFullNext === "object" && partialOrFullNext.version
+          ? partialOrFullNext
+          : { ...(cur || {}), ...(partialOrFullNext || {}) };
 
-    // optimistic UI update
-    setLocalData(next);
+      ctx.store.set(next);
+      setRev((r) => r + 1);
+      return next;
+    },
+    [ctx, defaultFn]
+  );
 
-    // persist
-    storeSet(ctx, next);
-
-    return next;
-  };
-
-  return { data: localData, patch };
+  return { data, patch };
 }
 
 // -----------------------------
@@ -231,13 +211,13 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
   // Clear local unlock when rewards unlock expires (with debounce to prevent flash)
   useEffect(() => {
     if (!localUnlocked) return;
-    
+
     // Only clear local unlock if rewards data definitively shows expired after a small delay
     const timer = setTimeout(() => {
       if (isParentUnlocked(rewardsData)) return;
       setLocalUnlocked(false);
     }, 100);
-    
+
     return () => clearTimeout(timer);
   }, [localUnlocked, rewardsData]);
 
@@ -261,7 +241,7 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
 
     // Call unlockParent with the wrapped context
     const ok = ctx.store?.setModuleData ? unlockParent(rewardsCtx, pin, 5) : unlockParent(ctx, pin, 5);
-    
+
     if (!ok) {
       setErr("Incorrect password.");
       return;
@@ -547,11 +527,8 @@ export default function ChoresModule({ ctx }) {
   const { data: rawData, patch } = useModuleData(ctx, defaultChoresData);
   const data0 = useMemo(() => normalizeChoresData(rawData), [rawData]);
 
+  // Derive helper expiry for UI without auto-writing back to the store.
   const data = useMemo(() => syncHelperExpiry(data0), [data0]);
-  useEffect(() => {
-    if (data !== data0) patch(data);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, data0]);
 
   const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
   const [settingsOpen, setSettingsOpen] = useState(false);
