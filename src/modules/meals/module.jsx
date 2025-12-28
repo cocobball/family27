@@ -223,46 +223,79 @@ export default function MealsModule({ ctx }) {
   const weekDays = data.planner.weeks?.[weekStart]?.days || {};
   const dayEntry = weekDays[activeDay] || {};
 
-  // Publish meals for selected date to shared state (Meals → Calendar bridge)
+  // BRIDGE: Subscribe to selectedDate from Calendar
+  const shared = getShared(ctx);
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const s = shared?.get?.() || {};
+    return s.selectedDate || new Date().toISOString().slice(0, 10);
+  });
+
   useEffect(() => {
-    // Compute ISO date for activeDay
-    const dayIndex = DAYS.indexOf(activeDay);
-    if (dayIndex === -1) return;
-    
-    const activeDayDate = addDays(weekStart, dayIndex);
-    const mealsSelectedDate = activeDayDate.toISOString().slice(0, 10);
-    
-    // Build mealsForSelectedDate array
-    const mealsForSelectedDate = SLOTS.map((slot) => {
-      const slotData = dayEntry?.[slot.key];
-      if (!slotData) return null;
-      
-      if (slotData.type === "text") {
-        return { slot: slot.label, name: slotData.text };
+    if (!shared?.subscribe) return;
+    return shared.subscribe((s) => {
+      const nextDate = s.selectedDate || new Date().toISOString().slice(0, 10);
+      setSelectedDate(nextDate);
+    });
+  }, [shared]);
+
+  // BRIDGE: Publish mealsForSelectedDate whenever data or selectedDate changes
+  useEffect(() => {
+    if (!shared?.set) return;
+
+    // Helper: compute meals for a given date string
+    const getMealsForDate = (dateStr) => {
+      try {
+        const date = new Date(dateStr + "T12:00:00");
+        const weekStartsOnMonday = data.settings?.weekStartsOnMonday ?? true;
+        const weekKey = getWeekKey(date, weekStartsOnMonday);
+        
+        // Get day name (0=Sunday, 1=Monday, ..., 6=Saturday)
+        // DAYS array is Monday-based: ["Monday", "Tuesday", ...]
+        const dayIndex = (date.getDay() + 6) % 7; // Convert to Monday=0
+        const dayName = DAYS[dayIndex];
+
+        const week = data.planner.weeks?.[weekKey];
+        if (!week) return [];
+
+        const day = week.days?.[dayName];
+        if (!day) return [];
+
+        return SLOTS.map((slot) => {
+          const slotData = day[slot.key];
+          if (!slotData) return null;
+
+          if (slotData.type === "text") {
+            return { slot: slot.label, name: slotData.text || "(Meal)" };
+          }
+
+          if (slotData.type === "recipe") {
+            const recipe = recipesById.get(slotData.id);
+            if (!recipe) return null;
+            return {
+              slot: slot.label,
+              name: recipe.name || "(Recipe)",
+              notes: recipe.notes || null,
+            };
+          }
+
+          return null;
+        }).filter(Boolean);
+      } catch (err) {
+        console.error("[Meals bridge] getMealsForDate error:", err);
+        return [];
       }
-      
-      if (slotData.type === "recipe") {
-        const recipe = recipesById.get(slotData.id);
-        if (!recipe) return null;
-        return {
-          slot: slot.label,
-          name: recipe.name,
-          notes: recipe.notes || undefined,
-        };
-      }
-      
-      return null;
-    }).filter(Boolean);
+    };
+
+    const mealsForSelectedDate = getMealsForDate(selectedDate);
     
-    // Publish to shared state
     sharedSet(ctx, {
       mealsForSelectedDate,
-      mealsSelectedDate,
+      mealsSelectedDate: selectedDate,
     });
-    
-    // TODO remove debug log
-    console.log("MEALS->shared", mealsSelectedDate, mealsForSelectedDate);
-  }, [ctx, weekStart, activeDay, dayEntry, recipesById]);
+
+    // TODO: remove debug log
+    console.log("MEALS->shared", selectedDate, mealsForSelectedDate.length, "meals");
+  }, [ctx, shared, data, selectedDate, recipesById]);
 
   // Recipe editor
   const [editingRecipeId, setEditingRecipeId] = useState(null);
