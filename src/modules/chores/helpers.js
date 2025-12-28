@@ -1,6 +1,6 @@
 // src/modules/chores/helpers.js
 
-export const CHORES_SCHEMA_VERSION = 2;
+export const CHORES_SCHEMA_VERSION = 3;
 
 export const PEOPLE_DEFAULTS = ["Cory", "Anna", "Brady", "Harvey"];
 export const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -9,22 +9,25 @@ export function defaultChoresData() {
   return {
     version: CHORES_SCHEMA_VERSION,
 
-    // Core
+    // core
     people: PEOPLE_DEFAULTS,
     chores: [], // { id, day, person, name, reward?: { minutes:number, points:number }, createdAt }
 
-    // Completion (week-scoped)
+    // completion (weekly)
     doneByWeek: {}, // { [weekKey]: { [choreId]: true } }
 
-    // Prevent double-awarding (week-scoped)
-    // Each chore can award each currency once per week.
+    // reward bookkeeping (weekly; used for idempotent award + reversible debit)
     rewardGrantsByWeek: {}, // { [weekKey]: { [choreId]: { minutes?:true, points?:true, grantedAt:number } } }
-    weeklyBonusGrantsByWeek: {}, // { [weekKey]: { [person]: { grantedAt:number } } }
+    weeklyBonusGrantsByWeek: {}, // { [weekKey]: { [person]: { minutes:number, points:number, grantedAt:number } } }
+
+    // one-off helper tasks (not weekly recurring chores)
+    helperTasks: [], // { id, title, assignedTo: ["harvey","brady"], reward:{minutes,points}, expiresAt?:number|null, status:"active"|"expired"|"completed", createdAt:number, completedAt?:number|null, completedBy?:string[] }
+    helperGrants: {}, // { [helperId]: { [kidId]: { minutes?:true, points?:true, grantedAt:number } } }
 
     // UI
     viewMode: "day", // "day" | "week"
 
-    // Settings
+    // settings
     settings: {
       weeklyBonusByPerson: {
         Harvey: { minutes: 0, points: 0 },
@@ -49,6 +52,9 @@ export function normalizeChoresData(raw) {
       ? s.weeklyBonusGrantsByWeek
       : {};
 
+  const helperTasks = Array.isArray(s.helperTasks) ? s.helperTasks : [];
+  const helperGrants = s.helperGrants && typeof s.helperGrants === "object" ? s.helperGrants : {};
+
   const settings = s.settings && typeof s.settings === "object" ? s.settings : {};
   const weeklyBonusByPerson =
     settings.weeklyBonusByPerson && typeof settings.weeklyBonusByPerson === "object"
@@ -65,6 +71,8 @@ export function normalizeChoresData(raw) {
     doneByWeek,
     rewardGrantsByWeek,
     weeklyBonusGrantsByWeek,
+    helperTasks: helperTasks.map((t) => normalizeHelperTask(t)).filter(Boolean),
+    helperGrants,
     settings: {
       ...base.settings,
       ...settings,
@@ -78,7 +86,6 @@ export function normalizeChoresData(raw) {
 
 function normalizeChore(c) {
   if (!c || typeof c !== "object") return null;
-
   const reward = c.reward && typeof c.reward === "object" ? c.reward : {};
   const minutes = Number(reward.minutes || 0) || 0;
   const points = Number(reward.points || 0) || 0;
@@ -93,8 +100,35 @@ function normalizeChore(c) {
   };
 }
 
+function normalizeHelperTask(t) {
+  if (!t || typeof t !== "object") return null;
+
+  const reward = t.reward && typeof t.reward === "object" ? t.reward : {};
+  const minutes = Number(reward.minutes || 0) || 0;
+  const points = Number(reward.points || 0) || 0;
+
+  const assignedTo = Array.isArray(t.assignedTo) ? t.assignedTo.map(String) : [];
+  const status = t.status === "completed" || t.status === "expired" ? t.status : "active";
+
+  const expiresAt = t.expiresAt === null || t.expiresAt === undefined ? null : Number(t.expiresAt) || null;
+
+  const completedBy = Array.isArray(t.completedBy) ? t.completedBy.map(String) : [];
+
+  return {
+    id: String(t.id || ""),
+    title: String(t.title || ""),
+    assignedTo: assignedTo.filter((x) => x === "harvey" || x === "brady"),
+    reward: { minutes, points },
+    expiresAt,
+    status,
+    createdAt: Number(t.createdAt || 0) || 0,
+    completedAt: t.completedAt ? Number(t.completedAt) || null : null,
+    completedBy,
+  };
+}
+
 /**
- * Week key based on Monday start (YYYY-MM-DD for Monday of that week).
+ * Week key based on Monday start (YYYY-MM-DD for Monday of that week)
  */
 export function getWeekKey(d = new Date()) {
   const date = new Date(d);
@@ -158,4 +192,11 @@ export function getChoresForDateWithDone(data, date) {
   const wk = getWeekKey(date);
   const doneMap = s.doneByWeek?.[wk] || {};
   return getChoresForDate(s, date).map((c) => ({ ...c, done: !!doneMap[c.id] }));
+}
+
+export function isHelperExpired(task, nowMs = Date.now()) {
+  if (!task) return false;
+  if (task.status === "completed") return false;
+  if (task.expiresAt && nowMs > task.expiresAt) return true;
+  return task.status === "expired";
 }

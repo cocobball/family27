@@ -1,16 +1,23 @@
 import { Gift } from "lucide-react";
 import RewardsModule from "./module.jsx";
-import { defaultRewardsData, creditRewards } from "./helpers.js";
+import { defaultRewardsData, creditRewards, debitRewards } from "./helpers.js";
 
 function attachRewardsListeners(ctx) {
   // Idempotent guard (prevents double-attaching during HMR/dev)
-  if (ctx.__rewardsCreditListenerAttached) return;
-  ctx.__rewardsCreditListenerAttached = true;
+  if (ctx.__rewardsListenersAttached) return;
+  ctx.__rewardsListenersAttached = true;
 
   ctx.eventBus.on("REWARDS/CREDIT", (payload) => {
     const res = creditRewards(ctx, payload);
     if (!res.ok) {
       console.warn("[REWARDS] credit failed:", res.error, payload);
+    }
+  });
+
+  ctx.eventBus.on("REWARDS/DEBIT", (payload) => {
+    const res = debitRewards(ctx, payload);
+    if (!res.ok) {
+      console.warn("[REWARDS] debit failed:", res.error, payload);
     }
   });
 }
@@ -23,8 +30,6 @@ export const moduleDef = {
   defaultData: defaultRewardsData,
   dependencies: [],
 
-  // ✅ Your dashboard framework may call one of these hooks.
-  // We provide several common names so it works without you having to change the core app.
   onInit(ctx) {
     attachRewardsListeners(ctx);
   },
