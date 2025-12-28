@@ -74,7 +74,7 @@ import {
   uid,
 } from "./helpers.js";
 
-import { defaultData as defaultMealsData, getWeekKey } from "../meals/helpers.js";
+import { defaultData as defaultMealsData, getWeekKey as getMealsWeekKey } from "../meals/helpers.js";
 
 // Local lightweight chores helpers to avoid importing the chores module and
 // keep the integration optional (read from ctx.sharedState when available).
@@ -90,7 +90,7 @@ function getMealsForDateFromModule(mealsData, dateStr) {
   if (!mealsData || !mealsData.planner || !mealsData.planner.weeks) return [];
   
   const weekStartsOnMonday = mealsData.settings?.weekStartsOnMonday ?? true;
-  const weekKey = getWeekKey(new Date(dateStr + "T12:00:00"), weekStartsOnMonday);
+  const weekKey = getMealsWeekKey(new Date(dateStr + "T12:00:00"), weekStartsOnMonday);
   const dayName = dateToWeekdayName(dateStr);
   const dayObj = mealsData.planner.weeks?.[weekKey]?.days?.[dayName] || {};
   
@@ -680,11 +680,7 @@ export default function CalendarModule({ ctx }) {
 
   // Read meals data from Meals module store
   const mealsData = useMemo(() => {
-    try {
-      return ctx.store.getModuleData?.("meals", defaultMealsData()) || defaultMealsData();
-    } catch {
-      return defaultMealsData();
-    }
+    return ctx.store.getModuleData?.("meals", defaultMealsData()) ?? null;
   }, [ctx.store]);
 
   // Compute meals for selected day
