@@ -74,9 +74,42 @@ import {
   uid,
 } from "./helpers.js";
 
+import { defaultData as defaultMealsData, getWeekKey } from "../meals/helpers.js";
+
 // Local lightweight chores helpers to avoid importing the chores module and
 // keep the integration optional (read from ctx.sharedState when available).
 const CHORES_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+// Meals integration helpers
+function dateToWeekdayName(dateStr) {
+  const d = new Date(dateStr + "T12:00:00");
+  return CHORES_DAYS[(d.getDay() + 6) % 7] || "Monday";
+}
+
+function getMealsForDateFromModule(mealsData, dateStr) {
+  if (!mealsData || !mealsData.planner || !mealsData.planner.weeks) return [];
+  
+  const weekStartsOnMonday = mealsData.settings?.weekStartsOnMonday ?? true;
+  const weekKey = getWeekKey(new Date(dateStr + "T12:00:00"), weekStartsOnMonday);
+  const dayName = dateToWeekdayName(dateStr);
+  const dayObj = mealsData.planner.weeks?.[weekKey]?.days?.[dayName] || {};
+  
+  const slotLabels = { breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner" };
+  return Object.entries(slotLabels)
+    .map(([slot, label]) => {
+      const entry = dayObj[slot];
+      if (!entry) return null;
+      if (entry.type === "recipe" && entry.id && Array.isArray(mealsData.recipes)) {
+        const recipe = mealsData.recipes.find((r) => r.id === entry.id);
+        return recipe ? { slot: label, name: recipe.name, notes: recipe.notes } : null;
+      }
+      if (entry.type === "text" && entry.text) {
+        return { slot: label, name: entry.text, notes: null };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
 
 function dateFromYMDLocal(ymd) {
   if (!ymd || typeof ymd !== "string") return new Date();
@@ -645,6 +678,20 @@ export default function CalendarModule({ ctx }) {
     return out;
   }, [occurrencesByDay, enabledCalIds]);
 
+  // Read meals data from Meals module store
+  const mealsData = useMemo(() => {
+    try {
+      return ctx.store.getModuleData?.("meals", defaultMealsData()) || defaultMealsData();
+    } catch {
+      return defaultMealsData();
+    }
+  }, [ctx.store]);
+
+  // Compute meals for selected day
+  const mealsForSelectedDay = useMemo(() => {
+    return getMealsForDateFromModule(mealsData, sel);
+  }, [mealsData, sel]);
+
   const filteredSelectedOccs = useMemo(() => {
     const list = filteredOccurrencesByDay[sel] ?? [];
     return sortEventsForDay(list, prefs);
@@ -907,96 +954,49 @@ export default function CalendarModule({ ctx }) {
             );
           })()}
 
-          {/* Chores and Meals area (day view) */}
-          {choresView === "day" && (showChores || showMeals) && (() => {
-            // Get meals data directly from localStorage (not sharedState)
-            let mealsData = null;
-            try {
-              const raw = localStorage.getItem("family_dashboard_db_v1");
-              if (raw) {
-                const db = JSON.parse(raw);
-                mealsData = db?.modules?.meals || null;
-              }
-            } catch {}
-            // Chores
-            const chores = showChores ? choresForSelectedDate : [];
-            // Meals
-            let meals = [];
-            if (showMeals && mealsData && mealsData.planner && mealsData.planner.weeks) {
-              // Find the week key and day name
-              const weekStartsOnMonday = mealsData.settings?.weekStartsOnMonday ?? true;
-              const getWeekKey = (dateStr) => {
-                const d = new Date(dateStr + "T12:00:00");
-                d.setHours(0, 0, 0, 0);
-                let day = d.getDay();
-                if (weekStartsOnMonday) {
-                  day = (day + 6) % 7;
-                }
-                d.setDate(d.getDate() - day);
-                const y = d.getFullYear();
-                const m = String(d.getMonth() + 1).padStart(2, "0");
-                const dd = String(d.getDate()).padStart(2, "0");
-                return `${y}-${m}-${dd}`;
-              };
-              const weekKey = getWeekKey(sel);
-              const dayName = (() => {
-                const d = new Date(sel + "T12:00:00");
-                return ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"][(d.getDay() + 6) % 7];
-              })();
-              const dayObj = mealsData.planner.weeks?.[weekKey]?.days?.[dayName] || {};
-              // SLOTS: breakfast, lunch, dinner
-              const slotLabels = { breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner" };
-              meals = Object.entries(slotLabels)
-                .map(([slot, label]) => {
-                  const entry = dayObj[slot];
-                  if (!entry) return null;
-                  if (entry.type === "recipe" && entry.id && Array.isArray(mealsData.recipes)) {
-                    const recipe = mealsData.recipes.find((r) => r.id === entry.id);
-                    return recipe ? { name: recipe.name, notes: recipe.notes, slot: label } : null;
-                  }
-                  if (entry.type === "text" && entry.text) {
-                    return { name: entry.text, slot: label };
-                  }
-                  return null;
-                })
-                .filter(Boolean);
-            }
-            if (!chores.length && !meals.length) return null;
-            return (
-              <div className="mt-4 space-y-2">
-                {chores.length > 0 && (
-                  <CollapsibleSection ctx={ctx} sectionKey="chores" title="Chores">
-                    <div className="space-y-2">
-                      {chores.map((c) => (
-                        <div
-                          key={c.id}
-                          className="rounded-xl px-3 py-2 text-sm flex items-center justify-between"
-                          style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}
-                        >
-                          <div className={c.done ? "line-through opacity-70" : ""}>
-                            <span className="opacity-80">{c.person}:</span> {c.name}
-                          </div>
-                          <div className="text-xs opacity-70">{c.done ? "done" : ""}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </CollapsibleSection>
+          {/* Meals section (under Important dates) */}
+          {showMeals && (
+            <div className="mt-2">
+              <CollapsibleSection ctx={ctx} sectionKey="meals_day" title="Meals">
+                {mealsForSelectedDay.length ? (
+                  <div className="space-y-2">
+                    {mealsForSelectedDay.map((m, i) => (
+                      <div
+                        key={i}
+                        className="rounded-xl px-3 py-2 text-sm"
+                        style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}
+                      >
+                        <div className="font-medium">{m.slot}: {m.name || "(Meal)"}</div>
+                        {m.notes ? <div className="text-xs opacity-60">{m.notes}</div> : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm opacity-70">No meals planned for this day.</div>
                 )}
-                {meals.length > 0 && (
-                  <CollapsibleSection ctx={ctx} sectionKey="meals" title="Meals">
-                    <div className="space-y-2">
-                      {meals.map((m, i) => (
-                        <div key={i} className="rounded-xl px-3 py-2 text-sm" style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}>
-                          <div className="font-medium">{m.slot ? `${m.slot}: ` : ""}{m.name || "(Meal)"}</div>
-                          {m.notes && <div className="text-xs opacity-60">{m.notes}</div>}
-                        </div>
-                      ))}
+              </CollapsibleSection>
+            </div>
+          )}
+
+          {/* Chores area (day view) */}
+          {choresView === "day" && showChores && choresForSelectedDate.length > 0 && (
+            <CollapsibleSection ctx={ctx} sectionKey="chores" title="Chores">
+              <div className="space-y-2">
+                {choresForSelectedDate.map((c) => (
+                  <div
+                    key={c.id}
+                    className="rounded-xl px-3 py-2 text-sm flex items-center justify-between"
+                    style={{ background: "var(--cal-panel)", border: "1px solid var(--cal-border)" }}
+                  >
+                    <div className={c.done ? "line-through opacity-70" : ""}>
+                      <span className="opacity-80">{c.person}:</span> {c.name}
                     </div>
-                  </CollapsibleSection>
-                )}
+                    <div className="text-xs opacity-70">{c.done ? "done" : ""}</div>
+                  </div>
+                ))}
               </div>
-            );
-          })()}
+            </CollapsibleSection>
+          )}
 
           {/* Chores area (week/month view) */}
           {choresView !== "day" && showChores && (() => {
