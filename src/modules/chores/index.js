@@ -4,7 +4,7 @@ import { defaultChoresData } from "./helpers.js";
 
 export const moduleDef = {
   id: "chores",
-  title: "family chorse",
+  title: "Chores",
   icon: ClipboardList,
   Component: ChoresModule,
   defaultData: defaultChoresData,

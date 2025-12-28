@@ -75,24 +75,43 @@ function sharedSet(ctx, patchOrKey, maybeVal) {
 }
 
 // -----------------------------
+// Storage helpers
+// -----------------------------
+function getModuleId(ctx) {
+  return ctx?.moduleId || ctx?.id || "chores";
+}
+
+function storeGet(ctx, fallbackValue) {
+  const s = ctx?.store;
+  const moduleId = getModuleId(ctx);
+  if (s?.getModuleData) return s.getModuleData(moduleId, fallbackValue);
+  if (s?.get) return s.get(fallbackValue);
+  return fallbackValue;
+}
+
+function storeSet(ctx, nextData) {
+  const s = ctx?.store;
+  const moduleId = getModuleId(ctx);
+  if (s?.setModuleData) return s.setModuleData(moduleId, nextData);
+  if (s?.set) return s.set(nextData);
+}
+
+// -----------------------------
 // Calendar-style module storage hook
 // -----------------------------
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
 
-  const data = useMemo(() => {
-    const value = ctx?.store?.get ? ctx.store.get(defaultFn()) : defaultFn();
-    return value;
-  }, [ctx, defaultFn, rev]);
+  const data = useMemo(() => storeGet(ctx, defaultFn()), [ctx, defaultFn, rev]);
 
   const patch = (partialOrFullNext) => {
-    const cur = ctx?.store?.get ? ctx.store.get(defaultFn()) : defaultFn();
+    const cur = storeGet(ctx, defaultFn());
     const next =
       partialOrFullNext && typeof partialOrFullNext === "object" && partialOrFullNext.version
         ? partialOrFullNext
         : { ...(cur || {}), ...(partialOrFullNext || {}) };
 
-    ctx?.store?.set?.(next);
+    storeSet(ctx, next);
     setRev((r) => r + 1);
     return next;
   };

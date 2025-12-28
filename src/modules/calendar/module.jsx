@@ -406,6 +406,12 @@ function EventEditor({ prefs, calendars, initial, isEdit, onCancel, onSave, onDe
           <div className="text-xs opacity-70">Title</div>
           <input
             className="w-full rounded-xl bg-white/5 border border-white/15 px-3 py-2 text-base"
+            style={{
+              backgroundColor: "rgba(255,255,255,0.05)",
+              borderColor: "rgba(255,255,255,0.15)",
+              color: "#fff",
+              caretColor: "#fff",
+            }}
             value={ev.title ?? ""}
             onChange={(e) => setField("title", e.target.value)}
             placeholder="Soccer practice"
