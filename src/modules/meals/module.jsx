@@ -66,6 +66,31 @@ function useModuleData(ctx, defaultFn) {
   return { data, set, update };
 }
 
+// -----------------------------
+// ctx compatibility helpers
+// -----------------------------
+function getShared(ctx) {
+  return ctx.shared || ctx.sharedState;
+}
+function sharedSet(ctx, patchOrKey, maybeVal) {
+  const shared = getShared(ctx);
+  if (!shared) return;
+
+  // Pattern A: shared.set({ ... })
+  if (typeof shared.set === "function") {
+    if (typeof patchOrKey === "string") {
+      // support shared.set("key", value) if implemented
+      try {
+        return shared.set(patchOrKey, maybeVal);
+      } catch {
+        // fall through
+      }
+    }
+    // Merge pattern: shared.set(prev => ({...(prev||{}), ...patch}))
+    return shared.set((prev) => ({ ...(prev || {}), ...(patchOrKey || {}) }));
+  }
+}
+
 function IconTab({ active, onClick, icon: Icon, label }) {
   return (
     <button
@@ -188,6 +213,57 @@ export default function MealsModule({ ctx }) {
     return () => clearTimeout(timer);
   }, [tab, weekStart, activeDay, updateStore]);
 
+  // Computed values needed for shared state publishing
+  const recipesById = useMemo(() => {
+    const m = new Map();
+    for (const r of data.recipes) m.set(r.id, r);
+    return m;
+  }, [data.recipes]);
+
+  const weekDays = data.planner.weeks?.[weekStart]?.days || {};
+  const dayEntry = weekDays[activeDay] || {};
+
+  // Publish meals for selected date to shared state (Meals → Calendar bridge)
+  useEffect(() => {
+    // Compute ISO date for activeDay
+    const dayIndex = DAYS.indexOf(activeDay);
+    if (dayIndex === -1) return;
+    
+    const activeDayDate = addDays(weekStart, dayIndex);
+    const mealsSelectedDate = activeDayDate.toISOString().slice(0, 10);
+    
+    // Build mealsForSelectedDate array
+    const mealsForSelectedDate = SLOTS.map((slot) => {
+      const slotData = dayEntry?.[slot.key];
+      if (!slotData) return null;
+      
+      if (slotData.type === "text") {
+        return { slot: slot.label, name: slotData.text };
+      }
+      
+      if (slotData.type === "recipe") {
+        const recipe = recipesById.get(slotData.id);
+        if (!recipe) return null;
+        return {
+          slot: slot.label,
+          name: recipe.name,
+          notes: recipe.notes || undefined,
+        };
+      }
+      
+      return null;
+    }).filter(Boolean);
+    
+    // Publish to shared state
+    sharedSet(ctx, {
+      mealsForSelectedDate,
+      mealsSelectedDate,
+    });
+    
+    // TODO remove debug log
+    console.log("MEALS->shared", mealsSelectedDate, mealsForSelectedDate);
+  }, [ctx, weekStart, activeDay, dayEntry, recipesById]);
+
   // Recipe editor
   const [editingRecipeId, setEditingRecipeId] = useState(null);
   const [recipeName, setRecipeName] = useState("");
@@ -211,15 +287,6 @@ export default function MealsModule({ ctx }) {
   const containerWidth = useContainerWidth(containerRef);
   const isCompact = containerWidth > 0 && containerWidth < 900;
   const [compactSlotEditor, setCompactSlotEditor] = useState(null); // { day, slot }
-
-  const recipesById = useMemo(() => {
-    const m = new Map();
-    for (const r of data.recipes) m.set(r.id, r);
-    return m;
-  }, [data.recipes]);
-
-  const weekDays = data.planner.weeks?.[weekStart]?.days || {};
-  const dayEntry = weekDays[activeDay] || {};
 
   const weekLabel = useMemo(() => fmtRangeLabel(weekStart), [weekStart]);
 
@@ -603,7 +670,7 @@ export default function MealsModule({ ctx }) {
             <UtensilsCrossed size={18} />
           </div>
           <div>
-            <div className="font-semibold text-lg">Meals</div>
+            <div className="font-semibold text-lg">Family Meals</div>
             <div className="text-xs opacity-70">
               Planner • recipes • grocery list
             </div>

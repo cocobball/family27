@@ -623,6 +623,7 @@ export default function CalendarModule({ ctx }) {
 
   const [sel, setSel] = useState(initialSelected);
   const [choresForSelectedDate, setChoresForSelectedDate] = useState(shared.choresForSelectedDate || []);
+  const [mealsForSelectedDate, setMealsForSelectedDate] = useState(shared.mealsForSelectedDate || []);
   const [month, setMonth] = useState(() => monthStrFromDate(initialSelected) || todayStr().slice(0, 7));
 
   // UI settings stored IN module data (so we never overwrite the store)
@@ -640,6 +641,7 @@ export default function CalendarModule({ ctx }) {
       const nextSel = s.selectedDate || todayStr();
       setSel(nextSel);
       setChoresForSelectedDate(s.choresForSelectedDate || []);
+      setMealsForSelectedDate(s.mealsForSelectedDate || []);
 
       const m = monthStrFromDate(nextSel);
       if (m) setMonth((cur) => (cur === m ? cur : m));
@@ -678,16 +680,16 @@ export default function CalendarModule({ ctx }) {
     return out;
   }, [occurrencesByDay, enabledCalIds]);
 
-  // Read meals data from Meals module store
+  // LEGACY: Read meals data from Meals module store (now using shared state bridge)
   // Re-read whenever Calendar's own data changes (piggyback on Calendar's useModuleData rev)
-  const mealsData = useMemo(() => {
-    return ctx.store.getModuleData?.("meals", defaultMealsData()) ?? null;
-  }, [ctx.store, data]);
+  // const mealsData = useMemo(() => {
+  //   return ctx.store.getModuleData?.("meals", defaultMealsData()) ?? null;
+  // }, [ctx.store, data]);
 
-  // Compute meals for selected day
-  const mealsForSelectedDay = useMemo(() => {
-    return getMealsForDateFromModule(mealsData, sel);
-  }, [mealsData, sel]);
+  // LEGACY: Compute meals for selected day (now using mealsForSelectedDate from shared state)
+  // const mealsForSelectedDay = useMemo(() => {
+  //   return getMealsForDateFromModule(mealsData, sel);
+  // }, [mealsData, sel]);
 
   const filteredSelectedOccs = useMemo(() => {
     const list = filteredOccurrencesByDay[sel] ?? [];
@@ -951,13 +953,13 @@ export default function CalendarModule({ ctx }) {
             );
           })()}
 
-          {/* Meals section (under Important dates) */}
+          {/* Meals section (under Important dates) - now using shared state bridge */}
           {showMeals && (
             <div className="mt-2">
               <CollapsibleSection ctx={ctx} sectionKey="meals_day" title="Meals">
-                {mealsForSelectedDay.length ? (
+                {mealsForSelectedDate.length ? (
                   <div className="space-y-2">
-                    {mealsForSelectedDay.map((m, i) => (
+                    {mealsForSelectedDate.map((m, i) => (
                       <div
                         key={i}
                         className="rounded-xl px-3 py-2 text-sm"
@@ -1057,8 +1059,8 @@ export default function CalendarModule({ ctx }) {
             );
           })()}
 
-          {/* Meals area (week/month view) */}
-          {choresView !== "day" && showMeals && (() => {
+          {/* LEGACY: Meals area (week/month view) - DISABLED, using shared state bridge for day view only */}
+          {false && choresView !== "day" && showMeals && (() => {
             const sharedNow = ctx.sharedState.get?.() || {};
             const mealsData = sharedNow.mealsData || null;
             if (!mealsData) return null;
