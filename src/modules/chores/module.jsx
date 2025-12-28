@@ -83,32 +83,48 @@ function sharedSet(ctx, patchOrKey, maybeVal) {
 // - Do not auto-write (no "save on render" effects).
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
+  const s = ctx?.store;
 
-  // Ensure defaultFn() is a VALUE (not a function) passed to ctx.store.get
-  const data = useMemo(() => ctx.store.get(defaultFn()), [ctx, defaultFn, rev]);
+  // Read data: prefer module-scoped getModuleData, fall back to root get
+  const data = useMemo(() => {
+    if (s?.getModuleData) {
+      return s.getModuleData("chores", defaultFn());
+    }
+    return s?.get?.(defaultFn()) ?? defaultFn();
+  }, [ctx, s, defaultFn, rev]);
 
-  // Keep in sync with server/hydration updates if store supports subscribe
+  // Subscribe to store updates if available
   useEffect(() => {
-    const s = ctx?.store;
     if (!s || typeof s.subscribe !== "function") return;
     const unsub = s.subscribe(() => setRev((r) => r + 1));
     return () => unsub?.();
-  }, [ctx]);
+  }, [s]);
 
+  // Patch: merge partial update into current data
   const patch = useCallback(
     (partialOrFullNext) => {
-      const cur = ctx.store.get(defaultFn());
+      let cur;
+      if (s?.getModuleData) {
+        cur = s.getModuleData("chores", defaultFn());
+      } else {
+        cur = s?.get?.(defaultFn()) ?? defaultFn();
+      }
 
       const next =
         partialOrFullNext && typeof partialOrFullNext === "object" && partialOrFullNext.version
           ? partialOrFullNext
           : { ...(cur || {}), ...(partialOrFullNext || {}) };
 
-      ctx.store.set(next);
+      if (s?.setModuleData) {
+        s.setModuleData("chores", next);
+      } else if (s?.set) {
+        s.set(next);
+      }
+
       setRev((r) => r + 1);
       return next;
     },
-    [ctx, defaultFn]
+    [ctx, s, defaultFn]
   );
 
   return { data, patch };
