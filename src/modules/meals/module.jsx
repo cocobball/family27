@@ -47,6 +47,25 @@ function uid() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+function useModuleData(ctx, defaultFn) {
+  const [rev, setRev] = useState(0);
+  const data = useMemo(() => migrateData(ctx.store.get(defaultFn())), [ctx, defaultFn, rev]);
+  
+  const set = (val) => {
+    ctx.store.set(migrateData(val));
+    setRev((r) => r + 1);
+  };
+  
+  const update = (fn) => {
+    const cur = ctx.store.get(defaultFn());
+    const next = fn(migrateData(cur));
+    ctx.store.set(migrateData(next));
+    setRev((r) => r + 1);
+  };
+  
+  return { data, set, update };
+}
+
 function IconTab({ active, onClick, icon: Icon, label }) {
   return (
     <button
@@ -84,45 +103,8 @@ function EmptyHint({ children }) {
 export default function MealsModule({ ctx }) {
   const fileRef = useRef(null);
 
-  // --- Load initial data ONCE ---
-  const initialDataRef = useRef(null);
-  if (initialDataRef.current === null) {
-    initialDataRef.current = migrateData(ctx.store.get(defaultData));
-  }
-
-  const [data, setData] = useState(() => initialDataRef.current);
-
-  // --- FIXED PERSISTENCE (prevents save loops + debounces) ---
-  const storeRef = useRef(ctx.store);
-  useEffect(() => {
-    // keep latest store (in case ctx changes identity)
-    storeRef.current = ctx.store;
-  }, [ctx.store]);
-
-  const saveTimerRef = useRef(null);
-  const lastSavedJsonRef = useRef(JSON.stringify(initialDataRef.current));
-
-  useEffect(() => {
-    const json = JSON.stringify(data);
-
-    // if nothing actually changed, don't save
-    if (json === lastSavedJsonRef.current) return;
-
-    // debounce writes (prevents spamming API on touch / typing / drag)
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      try {
-        storeRef.current.set(data);
-        lastSavedJsonRef.current = json;
-      } catch (e) {
-        console.error("MealsModule: failed to persist state", e);
-      }
-    }, 350);
-
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    };
-  }, [data]);
+  // --- Load and persist data using unified pattern ---
+  const { data, set: setStore, update: updateStore } = useModuleData(ctx, defaultData);
 
   // Module-scoped CSS for select dropdowns
   useEffect(() => {
@@ -166,8 +148,8 @@ export default function MealsModule({ ctx }) {
 
   // ensure week exists
   useEffect(() => {
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       const wk = d.planner.weeks[weekStart];
       if (wk) return d;
       return {
@@ -178,18 +160,18 @@ export default function MealsModule({ ctx }) {
         },
       };
     });
-  }, [weekStart]);
+  }, [weekStart, updateStore]);
 
   // Persist UI state (tab, week, day) to module data
   useEffect(() => {
     const timer = setTimeout(() => {
-      setData(prev => ({
+      updateStore(prev => ({
         ...prev,
         ui: { lastTab: tab, lastWeekStart: weekStart, lastActiveDay: activeDay }
       }));
     }, 500);
     return () => clearTimeout(timer);
-  }, [tab, weekStart, activeDay]);
+  }, [tab, weekStart, activeDay, updateStore]);
 
   // Recipe editor
   const [editingRecipeId, setEditingRecipeId] = useState(null);
@@ -237,8 +219,8 @@ export default function MealsModule({ ctx }) {
   };
 
   const setSlot = (slotKey, slotEntryOrNull) => {
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       const wk = d.planner.weeks[weekStart] || { days: {} };
       const curDay = wk.days[activeDay] || {};
       const nextDay = { ...curDay };
@@ -260,8 +242,8 @@ export default function MealsModule({ ctx }) {
   };
 
   const clearDay = () => {
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       const wk = d.planner.weeks[weekStart] || { days: {} };
       const nextDays = { ...wk.days };
       delete nextDays[activeDay];
@@ -300,8 +282,8 @@ export default function MealsModule({ ctx }) {
     const items = (lines || []).map((t) => String(t || "").trim()).filter(Boolean);
     if (!items.length) return;
 
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       const existing = d.grocery.items || [];
       const next = [
         ...items.map((text) => ({ id: uid(), text, done: false, createdAt: new Date().toISOString(), source })),
@@ -351,8 +333,8 @@ export default function MealsModule({ ctx }) {
       .filter(Boolean)
       .slice(0, 20);
 
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       const now = new Date().toISOString();
 
       if (editingRecipeId) {
@@ -386,8 +368,8 @@ export default function MealsModule({ ctx }) {
   };
 
   const deleteRecipe = (id) => {
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
 
       // remove from planner
       const weeks = { ...d.planner.weeks };
@@ -459,8 +441,8 @@ export default function MealsModule({ ctx }) {
     if (!receiptStore.trim() && !receiptItemsText.trim()) return;
     const now = new Date().toISOString();
 
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       if (editingReceiptId) {
         return {
           ...d,
@@ -493,8 +475,8 @@ export default function MealsModule({ ctx }) {
   };
 
   const deleteReceipt = (id) => {
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       return { ...d, receipts: d.receipts.filter((r) => r.id !== id) };
     });
   };
@@ -508,8 +490,8 @@ export default function MealsModule({ ctx }) {
   };
 
   const toggleGrocery = (id) => {
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       return {
         ...d,
         grocery: {
@@ -521,15 +503,15 @@ export default function MealsModule({ ctx }) {
   };
 
   const removeGrocery = (id) => {
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       return { ...d, grocery: { ...d.grocery, items: d.grocery.items.filter((it) => it.id !== id) } };
     });
   };
 
   const clearDone = () => {
-    setData((prev) => {
-      const d = migrateData(prev);
+    updateStore((prev) => {
+      const d = prev;
       return { ...d, grocery: { ...d.grocery, items: d.grocery.items.filter((it) => !it.done) } };
     });
   };
@@ -554,7 +536,7 @@ export default function MealsModule({ ctx }) {
     try {
       const text = await file.text();
       const imported = parseImportText(text);
-      setData(imported);
+      setStore(imported);
     } catch (e) {
       console.error(e);
       alert("Import failed. Please choose a valid Meals export (XML) or a JSON backup.");
