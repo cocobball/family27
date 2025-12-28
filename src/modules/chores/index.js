@@ -8,5 +8,4 @@ export const moduleDef = {
   icon: ClipboardList,
   Component: ChoresModule,
   defaultData: defaultChoresData,
-  // no declared dependencies
 };
