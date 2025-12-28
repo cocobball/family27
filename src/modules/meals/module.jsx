@@ -703,7 +703,7 @@ export default function MealsModule({ ctx }) {
             <UtensilsCrossed size={18} />
           </div>
           <div>
-            <div className="font-semibold text-lg">Family Meals</div>
+            <div className="font-semibold text-lg">Meals</div>
             <div className="text-xs opacity-70">
               Planner • recipes • grocery list
             </div>
