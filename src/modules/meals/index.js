@@ -5,7 +5,7 @@ import { defaultData } from "./helpers.js";
 
 export const moduleDef = {
   id: "meals",
-  title: "Meals",
+  title: "Family Meals",
   icon: UtensilsCrossed,
   Component: Module,
   SettingsComponent: Settings,

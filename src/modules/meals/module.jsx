@@ -817,9 +817,339 @@ export default function MealsModule({ ctx }) {
           </div>
         )}
 
-        {/* recipes / receipts / grocery tabs unchanged from your original */}
-        {/* (kept as-is in your repo; if you want I can paste the remaining tabs too,
-            but the only REQUIRED fix for the spam is the persistence block above.) */}
+        {tab === "recipes" && (
+          <Section
+            title="Recipes"
+            right={
+              <button className="btn btnPrimary" onClick={startNewRecipe}>
+                <Plus size={16} /> New Recipe
+              </button>
+            }
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <Search size={16} className="opacity-70" />
+              <input
+                ref={recipeSearchRef}
+                value={recipeSearch}
+                onChange={(e) => setRecipeSearch(e.target.value)}
+                placeholder="Search recipes..."
+                className="flex-1 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+              />
+            </div>
+
+            {editingRecipeId !== null || recipeSearch === "" && data.recipes.length === 0 ? (
+              <div className="rounded-2xl p-4 bg-white/5 border border-white/10 space-y-3">
+                <div className="font-semibold">{editingRecipeId ? "Edit Recipe" : "New Recipe"}</div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Name</div>
+                  <input
+                    value={recipeName}
+                    onChange={(e) => setRecipeName(e.target.value)}
+                    placeholder="Spaghetti Carbonara"
+                    className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Ingredients (one per line)</div>
+                  <textarea
+                    value={recipeIngredientsText}
+                    onChange={(e) => setRecipeIngredientsText(e.target.value)}
+                    placeholder="2 cups flour&#10;1 cup sugar&#10;3 eggs"
+                    className="w-full min-h-32 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm font-mono"
+                  />
+                  <button className="btn mt-2" onClick={autoFormatIngredients}>
+                    <Sparkles size={16} /> Auto-format
+                  </button>
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Notes</div>
+                  <textarea
+                    value={recipeNotes}
+                    onChange={(e) => setRecipeNotes(e.target.value)}
+                    placeholder="Cook at 350°F for 30 minutes..."
+                    className="w-full min-h-24 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Tags (comma-separated)</div>
+                  <input
+                    value={recipeTags}
+                    onChange={(e) => setRecipeTags(e.target.value)}
+                    placeholder="dinner, pasta, Italian"
+                    className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <button className="btn btnPrimary" onClick={saveRecipe}>
+                    <Check size={16} /> {editingRecipeId ? "Save" : "Add"}
+                  </button>
+                  {editingRecipeId && (
+                    <>
+                      <button className="btn" onClick={() => deleteRecipe(editingRecipeId)}>
+                        <Trash2 size={16} /> Delete
+                      </button>
+                      <button className="btn" onClick={() => setEditingRecipeId(null)}>
+                        <X size={16} /> Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-3 space-y-2">
+              {filteredRecipes.length ? (
+                filteredRecipes.map((r) => (
+                  <div key={r.id} className="rounded-2xl p-3 bg-white/5 border border-white/10">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold truncate">{r.name || "(Untitled)"}</div>
+                        {r.tags?.length ? (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {r.tags.map((t) => (
+                              <Pill key={t}>{t}</Pill>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="flex gap-2">
+                        <button className="iconBtn" onClick={() => editRecipe(r)} title="Edit">
+                          <Pencil size={16} />
+                        </button>
+                        <button className="iconBtn" onClick={() => deleteRecipe(r.id)} title="Delete">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                    {r.ingredientsText && (
+                      <div className="mt-2 text-xs opacity-70 whitespace-pre-wrap max-h-20 overflow-auto rounded-xl p-2 bg-black/10">
+                        {r.ingredientsText}
+                      </div>
+                    )}
+                    {r.notes && (
+                      <div className="mt-2 text-sm opacity-80">{r.notes}</div>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <EmptyHint>
+                  {recipeSearch ? "No recipes match your search." : "No recipes yet. Click 'New Recipe' to start."}
+                </EmptyHint>
+              )}
+            </div>
+          </Section>
+        )}
+
+        {tab === "receipts" && (
+          <Section
+            title="Receipts"
+            right={
+              <button className="btn btnPrimary" onClick={startNewReceipt}>
+                <Plus size={16} /> New Receipt
+              </button>
+            }
+          >
+            {editingReceiptId !== null || data.receipts.length === 0 ? (
+              <div className="rounded-2xl p-4 bg-white/5 border border-white/10 space-y-3">
+                <div className="font-semibold">{editingReceiptId ? "Edit Receipt" : "New Receipt"}</div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <div className="text-xs opacity-70 mb-1">Store</div>
+                    <input
+                      value={receiptStore}
+                      onChange={(e) => setReceiptStore(e.target.value)}
+                      placeholder="Whole Foods"
+                      className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-xs opacity-70 mb-1">Date</div>
+                    <input
+                      type="date"
+                      value={receiptDate}
+                      onChange={(e) => setReceiptDate(e.target.value)}
+                      className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Items (one per line)</div>
+                  <textarea
+                    value={receiptItemsText}
+                    onChange={(e) => setReceiptItemsText(e.target.value)}
+                    placeholder="Milk&#10;Bread&#10;Eggs"
+                    className="w-full min-h-32 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm font-mono"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Notes</div>
+                  <textarea
+                    value={receiptNotes}
+                    onChange={(e) => setReceiptNotes(e.target.value)}
+                    placeholder="Used coupon..."
+                    className="w-full min-h-20 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Total</div>
+                  <input
+                    value={receiptTotal}
+                    onChange={(e) => setReceiptTotal(e.target.value)}
+                    placeholder="$45.67"
+                    className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <button className="btn btnPrimary" onClick={saveReceipt}>
+                    <Check size={16} /> {editingReceiptId ? "Save" : "Add"}
+                  </button>
+                  {editingReceiptId && (
+                    <>
+                      <button className="btn" onClick={() => deleteReceipt(editingReceiptId)}>
+                        <Trash2 size={16} /> Delete
+                      </button>
+                      <button className="btn" onClick={() => setEditingReceiptId(null)}>
+                        <X size={16} /> Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-3 space-y-2">
+              {data.receipts.length ? (
+                data.receipts.map((rec) => (
+                  <div key={rec.id} className="rounded-2xl p-3 bg-white/5 border border-white/10">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold">{rec.store || "(No store)"}</div>
+                        <div className="text-xs opacity-70">{rec.date || "No date"}</div>
+                        {rec.total && <div className="text-sm opacity-80 mt-1">Total: {rec.total}</div>}
+                      </div>
+                      <div className="flex gap-2">
+                        <button className="iconBtn" onClick={() => editReceipt(rec)} title="Edit">
+                          <Pencil size={16} />
+                        </button>
+                        <button
+                          className="iconBtn"
+                          onClick={() => addReceiptToGroceries(rec.id)}
+                          title="Add items to grocery"
+                        >
+                          <ShoppingCart size={16} />
+                        </button>
+                        <button className="iconBtn" onClick={() => deleteReceipt(rec.id)} title="Delete">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                    {rec.itemsText && (
+                      <div className="mt-2 text-xs opacity-70 whitespace-pre-wrap max-h-20 overflow-auto rounded-xl p-2 bg-black/10">
+                        {rec.itemsText}
+                      </div>
+                    )}
+                    {rec.notes && <div className="mt-2 text-sm opacity-80">{rec.notes}</div>}
+                  </div>
+                ))
+              ) : (
+                <EmptyHint>No receipts yet. Click 'New Receipt' to add one.</EmptyHint>
+              )}
+            </div>
+          </Section>
+        )}
+
+        {tab === "grocery" && (
+          <Section
+            title="Grocery List"
+            right={
+              <div className="flex gap-2">
+                <button className="btn" onClick={clearDone} title="Remove completed items">
+                  <Trash2 size={16} /> Clear done
+                </button>
+                <button className="btn btnPrimary" onClick={addWeekGroceries}>
+                  <Sparkles size={16} /> Add week
+                </button>
+              </div>
+            }
+          >
+            <div className="mb-3">
+              <div className="text-xs opacity-70 mb-1">Add items (one per line or comma-separated)</div>
+              <div className="flex gap-2">
+                <textarea
+                  value={groceryDraft}
+                  onChange={(e) => setGroceryDraft(e.target.value)}
+                  placeholder="Milk, bread, eggs"
+                  className="flex-1 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  rows={2}
+                />
+                <button
+                  className="btn btnPrimary"
+                  onClick={() => {
+                    const lines = groceryDraft.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+                    if (lines.length) {
+                      addItemsToGrocery(lines, "manual");
+                      setGroceryDraft("");
+                    }
+                  }}
+                >
+                  <Plus size={16} /> Add
+                </button>
+              </div>
+            </div>
+
+            <div className="mb-3 flex items-center gap-2">
+              <Search size={16} className="opacity-70" />
+              <input
+                value={grocerySearch}
+                onChange={(e) => setGrocerySearch(e.target.value)}
+                placeholder="Search items..."
+                className="flex-1 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+              />
+            </div>
+
+            <div className="space-y-2">
+              {filteredGrocery.length ? (
+                filteredGrocery.map((it) => (
+                  <div
+                    key={it.id}
+                    className="rounded-2xl px-3 py-2 bg-white/5 border border-white/10 flex items-center gap-3"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={it.done || false}
+                      onChange={() => toggleGrocery(it.id)}
+                      className="rounded"
+                    />
+                    <div className={"flex-1 " + (it.done ? "line-through opacity-50" : "")}>
+                      {it.text}
+                    </div>
+                    <button className="iconBtn" onClick={() => removeGrocery(it.id)} title="Remove">
+                      <X size={16} />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <EmptyHint>
+                  {grocerySearch ? "No items match your search." : "Your grocery list is empty."}
+                </EmptyHint>
+              )}
+            </div>
+
+            <div className="mt-3 text-xs opacity-70">
+              Tip: Use "Add week" to pull ingredients from this week's meal plan.
+            </div>
+          </Section>
+        )}
       </div>
     </div>
   );
