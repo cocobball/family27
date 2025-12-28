@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { ClipboardList, X, Plus, Settings, Check } from "lucide-react";
+import { ClipboardList, X, Plus, Settings, Check, Trash2 } from "lucide-react";
 import {
   DAYS,
   PEOPLE_DEFAULTS,
@@ -15,7 +15,7 @@ import {
   isHelperExpired,
 } from "./helpers.js";
 
-import { getRewardsData, unlockParent, isParentUnlocked } from "../rewards/helpers.js";
+import { getRewardsData, unlockParent, isParentUnlocked, defaultRewardsData } from "../rewards/helpers.js";
 
 // -----------------------------
 // lightweight global toggle
@@ -77,13 +77,13 @@ function sharedSet(ctx, patchOrKey, maybeVal) {
 // -----------------------------
 // Storage helpers
 // -----------------------------
-function getModuleId(ctx) {
-  return ctx?.moduleId || ctx?.id || "chores";
+function getModuleId() {
+  return "chores";
 }
 
 function storeGet(ctx, fallbackValue) {
   const s = ctx?.store;
-  const moduleId = getModuleId(ctx);
+  const moduleId = getModuleId();
   if (s?.getModuleData) return s.getModuleData(moduleId, fallbackValue);
   if (s?.get) return s.get(fallbackValue);
   return fallbackValue;
@@ -91,7 +91,7 @@ function storeGet(ctx, fallbackValue) {
 
 function storeSet(ctx, nextData) {
   const s = ctx?.store;
-  const moduleId = getModuleId(ctx);
+  const moduleId = getModuleId();
   if (s?.setModuleData) return s.setModuleData(moduleId, nextData);
   if (s?.set) return s.set(nextData);
 }
@@ -100,23 +100,38 @@ function storeSet(ctx, nextData) {
 // Calendar-style module storage hook
 // -----------------------------
 function useModuleData(ctx, defaultFn) {
-  const [rev, setRev] = useState(0);
+  const fallback = useMemo(() => defaultFn(), [defaultFn]);
+  const [localData, setLocalData] = useState(() => storeGet(ctx, fallback));
 
-  const data = useMemo(() => storeGet(ctx, defaultFn()), [ctx, defaultFn, rev]);
+  useEffect(() => {
+    const s = ctx?.store;
+    const read = () => setLocalData(storeGet(ctx, fallback));
+    read();
+
+    // If the store supports subscribe, keep in sync with server/hydration updates
+    if (typeof s?.subscribe === "function") {
+      const unsub = s.subscribe(() => read());
+      return () => unsub?.();
+    }
+  }, [ctx, fallback]);
 
   const patch = (partialOrFullNext) => {
-    const cur = storeGet(ctx, defaultFn());
+    const cur = storeGet(ctx, fallback);
     const next =
       partialOrFullNext && typeof partialOrFullNext === "object" && partialOrFullNext.version
         ? partialOrFullNext
         : { ...(cur || {}), ...(partialOrFullNext || {}) };
 
+    // optimistic UI update
+    setLocalData(next);
+
+    // persist
     storeSet(ctx, next);
-    setRev((r) => r + 1);
+
     return next;
   };
 
-  return { data, patch };
+  return { data: localData, patch };
 }
 
 // -----------------------------
@@ -194,11 +209,68 @@ function toEndOfDayTs(dateStr /* YYYY-MM-DD */) {
 function ParentGate({ ctx, title = "Parent", children, onCancel }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
+  const [localUnlocked, setLocalUnlocked] = useState(false);
+  const [rev, setRev] = useState(0);
 
-  const rewardsData = getRewardsData(ctx);
-  const unlocked = isParentUnlocked(rewardsData);
+  const s = ctx?.store;
+
+  // Read rewards module state fresh on every render
+  const rewardsData = useMemo(() => {
+    if (s?.getModuleData) return s.getModuleData("rewards", defaultRewardsData());
+    return getRewardsData(ctx);
+  }, [ctx, s, rev]);
+
+  // Subscribe to store changes if available
+  useEffect(() => {
+    const s = ctx?.store;
+    if (!s || typeof s.subscribe !== "function") return;
+    const unsub = s.subscribe(() => setRev(r => r + 1));
+    return () => unsub?.();
+  }, [ctx]);
+
+  // Clear local unlock when rewards unlock expires (with debounce to prevent flash)
+  useEffect(() => {
+    if (!localUnlocked) return;
+    
+    // Only clear local unlock if rewards data definitively shows expired after a small delay
+    const timer = setTimeout(() => {
+      if (isParentUnlocked(rewardsData)) return;
+      setLocalUnlocked(false);
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, [localUnlocked, rewardsData]);
+
+  const unlocked = localUnlocked || isParentUnlocked(rewardsData);
 
   if (unlocked) return children;
+
+  const handleUnlock = () => {
+    // Create a wrapper ctx that forces unlockParent to write to rewards module
+    const rewardsCtx = {
+      ...ctx,
+      store: {
+        ...ctx.store,
+        get: () => (ctx.store?.getModuleData ? ctx.store.getModuleData("rewards", defaultRewardsData()) : getRewardsData(ctx)),
+        set: (next) => {
+          if (ctx.store?.setModuleData) return ctx.store.setModuleData("rewards", next);
+          return ctx.store?.set?.(next);
+        },
+      },
+    };
+
+    // Call unlockParent with the wrapped context
+    const ok = ctx.store?.setModuleData ? unlockParent(rewardsCtx, pin, 5) : unlockParent(ctx, pin, 5);
+    
+    if (!ok) {
+      setErr("Incorrect password.");
+      return;
+    }
+
+    setErr("");
+    setLocalUnlocked(true);
+    setRev(r => r + 1);
+  };
 
   return (
     <div className="rounded-3xl bg-white/10 backdrop-blur-xl border border-white/20 p-5">
@@ -214,14 +286,7 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
           className="flex-1 p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
         />
         <button
-          onClick={() => {
-            const ok = unlockParent(ctx, pin, 5);
-            if (!ok) {
-              setErr("Incorrect password.");
-              return;
-            }
-            setErr("");
-          }}
+          onClick={handleUnlock}
           className="px-4 py-3 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-sm"
         >
           Unlock
@@ -490,6 +555,7 @@ export default function ChoresModule({ ctx }) {
 
   const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helperChooser, setHelperChooser] = useState(null);
 
   useEffect(() => {
     const handler = (payload) => {
@@ -522,6 +588,38 @@ export default function ChoresModule({ ctx }) {
   const setViewMode = (mode) => patch({ viewMode: mode });
 
   const people = data.people || [];
+
+  const activeHelpers = useMemo(
+    () => (data.helperTasks || []).filter((t) => t.status === "active"),
+    [data.helperTasks]
+  );
+
+  const childCompleteHelperFromWidget = (task) => {
+    const s = syncHelperExpiry(data);
+    const nowTask = (s.helperTasks || []).find((t) => t.id === task.id);
+    if (!nowTask || nowTask.status !== "active") return;
+
+    const options = nowTask.assignedTo || [];
+    if (options.length <= 1) {
+      const next = awardHelperTask(ctx, s, nowTask, options);
+      patch(next);
+      return;
+    }
+
+    setHelperChooser({ taskId: nowTask.id, options });
+  };
+
+  const confirmHelperChooserFromWidget = (selectedKidIds) => {
+    const s = syncHelperExpiry(data);
+    const task = (s.helperTasks || []).find((t) => t.id === helperChooser?.taskId);
+    if (!task) {
+      setHelperChooser(null);
+      return;
+    }
+    const next = awardHelperTask(ctx, s, task, selectedKidIds);
+    patch(next);
+    setHelperChooser(null);
+  };
 
   const cardModel = useMemo(() => {
     const weekKey = getWeekKey(baseDate);
@@ -716,6 +814,38 @@ export default function ChoresModule({ ctx }) {
               );
             })
           )}
+
+          {activeHelpers.length > 0 && (
+            <div className="pt-3 mt-3 border-t border-white/10">
+              <div className="text-sm font-semibold opacity-90 mb-2">Daily Helper</div>
+              <div className="space-y-2">
+                {activeHelpers.map((t) => (
+                  <div key={t.id} className="rounded-xl bg-white/5 border border-white/10 p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm opacity-90 font-medium">{t.title}</div>
+                        <div className="text-xs opacity-60 mt-0.5">
+                          {(t.assignedTo || []).join(", ")}
+                          {formatInlineReward(t.reward)}
+                        </div>
+                        {t.expiresAt && (
+                          <div className="text-xs opacity-50 mt-0.5">
+                            Expires: {new Date(t.expiresAt).toLocaleDateString()}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => childCompleteHelperFromWidget(t)}
+                        className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-xs"
+                      >
+                        Complete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <button
@@ -727,8 +857,26 @@ export default function ChoresModule({ ctx }) {
         </button>
       </div>
 
-      <ChoreModeOverlay ctx={ctx} data={data} patch={patch} baseDate={baseDate} onChildMarkDone={markDoneChild} />
+      <ChoreModeOverlay 
+        ctx={ctx} 
+        data={data} 
+        patch={patch} 
+        baseDate={baseDate} 
+        onChildMarkDone={markDoneChild}
+        helperChooser={helperChooser}
+        setHelperChooser={setHelperChooser}
+        onConfirmHelperChooser={confirmHelperChooserFromWidget}
+      />
       <SettingsOverlay ctx={ctx} open={settingsOpen} onClose={() => setSettingsOpen(false)} data={data} patch={patch} />
+
+      {helperChooser ? (
+        <HelperChooserModal
+          task={(data.helperTasks || []).find((t) => t.id === helperChooser.taskId)}
+          options={helperChooser.options}
+          onCancel={() => setHelperChooser(null)}
+          onConfirm={confirmHelperChooserFromWidget}
+        />
+      ) : null}
     </div>
   );
 }
@@ -736,7 +884,7 @@ export default function ChoresModule({ ctx }) {
 // -----------------------------
 // Overlay
 // -----------------------------
-function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
+function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperChooser, setHelperChooser, onConfirmHelperChooser }) {
   const enabled = useChoreModeEnabled();
   const normalized0 = useMemo(() => normalizeChoresData(data), [data]);
   const normalized = useMemo(() => syncHelperExpiry(normalized0), [normalized0]);
@@ -747,10 +895,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const weekKey = useMemo(() => getWeekKey(baseDate || new Date()), [baseDate]);
   const doneMap = normalized.doneByWeek?.[weekKey] || {};
 
-  const [activeDay, setActiveDay] = useState(() => getDayName(baseDate || new Date()));
   const [parentPanelOpen, setParentPanelOpen] = useState(false);
-
-  const [helperChooser, setHelperChooser] = useState(null); // { taskId, options:["harvey","brady"] }
 
   // Add weekly chore form (parent)
   const [newName, setNewName] = useState("");
@@ -771,7 +916,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   useEffect(() => {
     if (!enabled) return;
     const dayName = getDayName(baseDate || new Date());
-    setActiveDay(dayName);
     setNewDay(dayName);
   }, [enabled, weekKey, baseDate]);
 
@@ -790,7 +934,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [enabled]);
 
-  const todaysChores = useMemo(() => chores.filter((c) => c.day === activeDay), [chores, activeDay]);
+  const todaysChores = useMemo(() => chores.filter((c) => c.day === newDay), [chores, newDay]);
   const todaysChoresByPerson = useMemo(() => groupChoresByPerson(todaysChores, people), [todaysChores, people]);
 
   const activeHelpers = useMemo(
@@ -935,6 +1079,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
       createdAt: Date.now(),
     };
 
+    console.log("[CHORES] add chore", chore);
     patch({
       ...normalized,
       people: nextPeople,
@@ -1008,6 +1153,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
       completedBy: [],
     };
 
+    console.log("[CHORES] add helper", task);
     patch({
       ...normalized,
       helperTasks: [...(normalized.helperTasks || []), task],
@@ -1054,15 +1200,9 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   };
 
   const confirmHelperChooser = (selectedKidIds) => {
-    const s = syncHelperExpiry(normalized);
-    const task = (s.helperTasks || []).find((t) => t.id === helperChooser?.taskId);
-    if (!task) {
-      setHelperChooser(null);
-      return;
+    if (onConfirmHelperChooser) {
+      onConfirmHelperChooser(selectedKidIds);
     }
-    const next = awardHelperTask(ctx, s, task, selectedKidIds);
-    patch(next);
-    setHelperChooser(null);
   };
 
   if (!enabled) return null;
@@ -1102,211 +1242,178 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2 mb-6">
-              {DAYS.map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setActiveDay(d)}
-                  className={`px-4 py-2 rounded-xl text-sm transition-all border ${
-                    activeDay === d
-                      ? "bg-white/20 text-white border-white/30"
-                      : "bg-white/10 text-white/80 border-white/10 hover:bg-white/15"
-                  }`}
-                >
-                  {d}
-                </button>
-              ))}
-            </div>
+            {/* Main content grid - Left: Parent controls (if open), Right: Chores content */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+              {parentPanelOpen ? (
+                <div className="self-start bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
+                  <ParentGate ctx={ctx} title="Parent tools" onCancel={() => setParentPanelOpen(false)}>
+                    <div className="space-y-6">
+                      {/* Add weekly chore */}
+                      <div>
+                        <div className="text-white text-xl font-semibold mb-4">Add weekly chore</div>
 
-            {parentPanelOpen ? (
-              <div className="mb-6">
-                <ParentGate ctx={ctx} title="Parent tools" onCancel={() => setParentPanelOpen(false)}>
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="text-white text-xl font-semibold">Week controls</div>
-                        <div className="text-white/50 text-sm">{weekKey}</div>
-                      </div>
+                        <div className="space-y-4">
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Day</label>
+                            <select
+                              value={newDay}
+                              onChange={(e) => setNewDay(e.target.value)}
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                            >
+                              {DAYS.map((d) => (
+                                <option key={d} value={d} className="bg-slate-900 text-white">
+                                  {d}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
 
-                      <button
-                        onClick={parentResetWeekSafe}
-                        className="w-full px-4 py-3 bg-white/10 rounded-xl text-white/90 hover:bg-white/20 transition-all text-sm border border-white/10"
-                      >
-                        Reset week (uncheck + reverse rewards)
-                      </button>
-
-                      <div className="text-white/40 text-xs mt-3">
-                        This will debit any rewards already granted this week.
-                      </div>
-                    </div>
-
-                    <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                      <div className="text-white text-xl font-semibold mb-4">Add weekly chore</div>
-
-                      <div className="space-y-4">
-                        <div>
-                          <label className="text-white/70 text-sm mb-2 block">Day</label>
-                          <select
-                            value={newDay}
-                            onChange={(e) => setNewDay(e.target.value)}
-                            className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                          >
-                            {DAYS.map((d) => (
-                              <option key={d} value={d} className="bg-slate-900 text-white">
-                                {d}
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Person</label>
+                            <select
+                              value={newPerson}
+                              onChange={(e) => setNewPerson(e.target.value)}
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                            >
+                              {people.map((p) => (
+                                <option key={p} value={p} className="bg-slate-900 text-white">
+                                  {p}
+                                </option>
+                              ))}
+                              <option value="__custom__" className="bg-slate-900 text-white">
+                                Other...
                               </option>
-                            ))}
-                          </select>
-                        </div>
+                            </select>
 
-                        <div>
-                          <label className="text-white/70 text-sm mb-2 block">Person</label>
-                          <select
-                            value={newPerson}
-                            onChange={(e) => setNewPerson(e.target.value)}
-                            className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                          >
-                            {people.map((p) => (
-                              <option key={p} value={p} className="bg-slate-900 text-white">
-                                {p}
-                              </option>
-                            ))}
-                            <option value="__custom__" className="bg-slate-900 text-white">
-                              Other...
-                            </option>
-                          </select>
+                            {newPerson === "__custom__" ? (
+                              <input
+                                type="text"
+                                value={newPersonCustom}
+                                onChange={(e) => setNewPersonCustom(e.target.value)}
+                                placeholder="Type a name"
+                                className="mt-2 w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                              />
+                            ) : null}
+                          </div>
 
-                          {newPerson === "__custom__" ? (
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Chore</label>
                             <input
                               type="text"
-                              value={newPersonCustom}
-                              onChange={(e) => setNewPersonCustom(e.target.value)}
-                              placeholder="Type a name"
-                              className="mt-2 w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                            />
-                          ) : null}
-                        </div>
-
-                        <div>
-                          <label className="text-white/70 text-sm mb-2 block">Chore</label>
-                          <input
-                            type="text"
-                            value={newName}
-                            onChange={(e) => setNewName(e.target.value)}
-                            onKeyDown={(e) => e.key === "Enter" && parentAddChore()}
-                            placeholder="e.g., Take out trash"
-                            className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Reward minutes</label>
-                            <input
-                              type="number"
-                              value={newRewardMinutes}
-                              onChange={(e) => setNewRewardMinutes(e.target.value)}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                              value={newName}
+                              onChange={(e) => setNewName(e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && parentAddChore()}
+                              placeholder="e.g., Take out trash"
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
                             />
                           </div>
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Reward points</label>
-                            <input
-                              type="number"
-                              value={newRewardPoints}
-                              onChange={(e) => setNewRewardPoints(e.target.value)}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                            />
-                          </div>
-                        </div>
 
-                        <button
-                          onClick={parentAddChore}
-                          className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
-                        >
-                          <Plus className="w-5 h-5" />
-                          Add chore
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Helper task editor */}
-                    <div className="lg:col-span-2 bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                      <div className="text-white text-xl font-semibold mb-2">Daily Helper tasks</div>
-                      <div className="text-white/60 text-sm mb-4">
-                        One-off bonus tasks. Can expire. When completed, rewards are credited; parent can undo completed
-                        helpers (reverse rewards) or reactivate expired helpers.
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <label className="text-white/70 text-sm mb-2 block">Task title</label>
-                          <input
-                            value={helperTitle}
-                            onChange={(e) => setHelperTitle(e.target.value)}
-                            placeholder="e.g., Help clean the garage"
-                            className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-white/70 text-sm mb-2 block">Expires (optional)</label>
-                          <input
-                            type="date"
-                            value={helperExpiryDate}
-                            onChange={(e) => setHelperExpiryDate(e.target.value)}
-                            className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                          />
-                        </div>
-
-                        <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                          <div className="text-white/80 text-sm font-semibold mb-2">Assign to</div>
-                          <label className="flex items-center gap-2 text-white/80 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={helperAssignHarvey}
-                              onChange={(e) => setHelperAssignHarvey(e.target.checked)}
-                            />
-                            Harvey
-                          </label>
-                          <label className="flex items-center gap-2 text-white/80 text-sm mt-2">
-                            <input
-                              type="checkbox"
-                              checked={helperAssignBrady}
-                              onChange={(e) => setHelperAssignBrady(e.target.checked)}
-                            />
-                            Brady
-                          </label>
-                          <div className="text-white/40 text-xs mt-2">
-                            If both are checked, completion can credit one or both.
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                          <div className="text-white/80 text-sm font-semibold mb-2">Bonus reward</div>
                           <div className="grid grid-cols-2 gap-3">
                             <div>
-                              <label className="text-white/70 text-xs block mb-1">Minutes</label>
+                              <label className="text-white/70 text-sm mb-2 block">Reward minutes</label>
                               <input
                                 type="number"
-                                value={helperRewardMinutes}
-                                onChange={(e) => setHelperRewardMinutes(e.target.value)}
+                                value={newRewardMinutes}
+                                onChange={(e) => setNewRewardMinutes(e.target.value)}
                                 className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
                               />
                             </div>
                             <div>
-                              <label className="text-white/70 text-xs block mb-1">Points</label>
+                              <label className="text-white/70 text-sm mb-2 block">Reward points</label>
                               <input
                                 type="number"
-                                value={helperRewardPoints}
-                                onChange={(e) => setHelperRewardPoints(e.target.value)}
+                                value={newRewardPoints}
+                                onChange={(e) => setNewRewardPoints(e.target.value)}
                                 className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
                               />
                             </div>
                           </div>
+
+                          <button
+                            onClick={parentAddChore}
+                            className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
+                          >
+                            <Plus className="w-5 h-5" />
+                            Add chore
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Helper task editor */}
+                      <div>
+                        <div className="text-white text-xl font-semibold mb-2">Daily Helper tasks</div>
+                        <div className="text-white/60 text-sm mb-4">
+                          One-off bonus tasks. Can expire.
                         </div>
 
-                        <div className="md:col-span-2">
+                        <div className="space-y-4">
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Task title</label>
+                            <input
+                              value={helperTitle}
+                              onChange={(e) => setHelperTitle(e.target.value)}
+                              placeholder="e.g., Help clean the garage"
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Expires (optional)</label>
+                            <input
+                              type="date"
+                              value={helperExpiryDate}
+                              onChange={(e) => setHelperExpiryDate(e.target.value)}
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                            />
+                          </div>
+
+                          <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                            <div className="text-white/80 text-sm font-semibold mb-2">Assign to</div>
+                            <label className="flex items-center gap-2 text-white/80 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={helperAssignHarvey}
+                                onChange={(e) => setHelperAssignHarvey(e.target.checked)}
+                              />
+                              Harvey
+                            </label>
+                            <label className="flex items-center gap-2 text-white/80 text-sm mt-2">
+                              <input
+                                type="checkbox"
+                                checked={helperAssignBrady}
+                                onChange={(e) => setHelperAssignBrady(e.target.checked)}
+                              />
+                              Brady
+                            </label>
+                            <div className="text-white/40 text-xs mt-2">
+                              If both are checked, completion can credit one or both.
+                            </div>
+                          </div>
+
+                          <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                            <div className="text-white/80 text-sm font-semibold mb-2">Bonus reward</div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="text-white/70 text-xs block mb-1">Minutes</label>
+                                <input
+                                  type="number"
+                                  value={helperRewardMinutes}
+                                  onChange={(e) => setHelperRewardMinutes(e.target.value)}
+                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-white/70 text-xs block mb-1">Points</label>
+                                <input
+                                  type="number"
+                                  value={helperRewardPoints}
+                                  onChange={(e) => setHelperRewardPoints(e.target.value)}
+                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
                           <button
                             onClick={parentAddHelper}
                             className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
@@ -1317,25 +1424,64 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                         </div>
                       </div>
 
-                      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                          <div className="text-white font-semibold mb-2">Expired helpers</div>
-                          {expiredHelpers.length ? (
-                            <div className="space-y-2">
-                              {expiredHelpers.map((t) => (
+                      {/* Expired helpers */}
+                      <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                        <div className="text-white font-semibold mb-2">Expired helpers</div>
+                        {expiredHelpers.length ? (
+                          <div className="space-y-2">
+                            {expiredHelpers.map((t) => (
+                              <div key={t.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                                <div className="text-white/90 text-sm font-semibold">{t.title}</div>
+                                <div className="text-white/60 text-xs">
+                                  Assigned: {(t.assignedTo || []).join(", ")}
+                                  {formatInlineReward(t.reward)}
+                                </div>
+
+                                <div className="mt-2 flex gap-2">
+                                  <button
+                                    onClick={() => parentReactivateHelper(t.id, "")}
+                                    className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
+                                  >
+                                    Reactivate
+                                  </button>
+                                  <button
+                                    onClick={() => parentDeleteHelper(t.id)}
+                                    className="px-3 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-200/20 text-red-100 text-sm"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-white/40 text-sm">None</div>
+                        )}
+                      </div>
+
+                      {/* Completed helpers */}
+                      <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                        <div className="text-white font-semibold mb-2">Completed helpers</div>
+                        {(normalized.helperTasks || []).filter((t) => t.status === "completed").length ? (
+                          <div className="space-y-2">
+                            {(normalized.helperTasks || [])
+                              .filter((t) => t.status === "completed")
+                              .map((t) => (
                                 <div key={t.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
                                   <div className="text-white/90 text-sm font-semibold">{t.title}</div>
                                   <div className="text-white/60 text-xs">
-                                    Assigned: {(t.assignedTo || []).join(", ")}
+                                    Completed by: {(t.completedBy || []).join(", ")}
                                     {formatInlineReward(t.reward)}
                                   </div>
-
                                   <div className="mt-2 flex gap-2">
                                     <button
-                                      onClick={() => parentReactivateHelper(t.id, "")}
+                                      onClick={() => {
+                                        const next = reverseHelperTaskIfCompleted(ctx, normalized, t.id);
+                                        patch(next);
+                                      }}
                                       className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
                                     >
-                                      Reactivate (no expiry)
+                                      Undo
                                     </button>
                                     <button
                                       onClick={() => parentDeleteHelper(t.id)}
@@ -1346,61 +1492,34 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                                   </div>
                                 </div>
                               ))}
-                            </div>
-                          ) : (
-                            <div className="text-white/40 text-sm">None</div>
-                          )}
-                        </div>
+                          </div>
+                        ) : (
+                          <div className="text-white/40 text-sm">None</div>
+                        )}
+                      </div>
 
-                        <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                          <div className="text-white font-semibold mb-2">Completed helpers</div>
-                          {(normalized.helperTasks || []).filter((t) => t.status === "completed").length ? (
-                            <div className="space-y-2">
-                              {(normalized.helperTasks || [])
-                                .filter((t) => t.status === "completed")
-                                .map((t) => (
-                                  <div key={t.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
-                                    <div className="text-white/90 text-sm font-semibold">{t.title}</div>
-                                    <div className="text-white/60 text-xs">
-                                      Completed by: {(t.completedBy || []).join(", ")}
-                                      {formatInlineReward(t.reward)}
-                                    </div>
-                                    <div className="mt-2 flex gap-2">
-                                      <button
-                                        onClick={() => {
-                                          const next = reverseHelperTaskIfCompleted(ctx, normalized, t.id);
-                                          patch(next);
-                                        }}
-                                        className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
-                                      >
-                                        Undo (reverse rewards)
-                                      </button>
-                                      <button
-                                        onClick={() => parentDeleteHelper(t.id)}
-                                        className="px-3 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-200/20 text-red-100 text-sm"
-                                      >
-                                        Delete
-                                      </button>
-                                    </div>
-                                  </div>
-                                ))}
-                            </div>
-                          ) : (
-                            <div className="text-white/40 text-sm">None</div>
-                          )}
+                      {/* Reset week - small button at bottom */}
+                      <div className="pt-4 border-t border-white/10">
+                        <button
+                          onClick={parentResetWeekSafe}
+                          className="w-full px-3 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-white/70 hover:text-white/90 transition-all text-xs"
+                        >
+                          Reset week (uncheck + reverse rewards)
+                        </button>
+                        <div className="text-white/30 text-xs mt-2 text-center">
+                          Debit rewards granted this week
                         </div>
                       </div>
                     </div>
-                  </div>
-                </ParentGate>
-              </div>
-            ) : null}
+                  </ParentGate>
+                </div>
+              ) : null}
 
-            {/* Main content */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Right column or full width: Chores content */}
+              <div className={parentPanelOpen ? "" : "lg:col-span-2"}>
               <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
                 <div className="flex items-center justify-between mb-4">
-                  <div className="text-white text-xl font-semibold">{activeDay}</div>
+                  <div className="text-white text-xl font-semibold">{newDay}</div>
                   <div className="text-white/50 text-sm">Week of {weekKey}</div>
                 </div>
 
@@ -1447,6 +1566,20 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                                       </div>
                                     </div>
                                   </div>
+
+                                  {parentPanelOpen ? (
+                                    <button
+                                      onClick={() => {
+                                        if (window.confirm("Delete this chore?")) {
+                                          parentRemoveChore(c.id);
+                                        }
+                                      }}
+                                      className="p-1.5 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 transition-all"
+                                      title="Delete chore"
+                                    >
+                                      <Trash2 className="w-4 h-4 text-white/60 hover:text-red-200" />
+                                    </button>
+                                  ) : null}
                                 </div>
                               );
                             })}
@@ -1455,7 +1588,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                       );
                     })
                   ) : (
-                    <div className="text-white/40 text-center py-10">No chores for {activeDay}.</div>
+                    <div className="text-white/40 text-center py-10">No chores for {newDay}.</div>
                   )}
                 </div>
               </div>
@@ -1531,6 +1664,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                   <div className="text-white/40 text-xs mt-4">Change bonus amounts in Settings (gear icon).</div>
                 </div>
               </div>
+              </div>
             </div>
 
             <div className="mt-6 text-center text-white/40 text-sm">
@@ -1539,15 +1673,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
           </div>
         </div>
       </div>
-
-      {helperChooser ? (
-        <HelperChooserModal
-          task={(normalized.helperTasks || []).find((t) => t.id === helperChooser.taskId)}
-          options={helperChooser.options}
-          onCancel={() => setHelperChooser(null)}
-          onConfirm={(kids) => confirmHelperChooser(kids)}
-        />
-      ) : null}
     </div>
   );
 
