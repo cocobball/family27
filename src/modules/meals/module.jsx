@@ -1,14 +1,1445 @@
-import React from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  UtensilsCrossed,
+  CalendarDays,
+  BookOpen,
+  Receipt,
+  ShoppingCart,
+  Plus,
+  Trash2,
+  Pencil,
+  Download,
+  Upload,
+  ChevronLeft,
+  ChevronRight,
+  X,
+  Search,
+  Sparkles,
+  Check,
+} from "lucide-react";
+import {
+  DAYS,
+  SLOTS,
+  defaultData,
+  migrateData,
+  getWeekKey,
+  addDays,
+  fmtRangeLabel,
+  splitLines,
+  countAndDedupe,
+  parseIngredientLine,
+  stringifyIngredient,
+  toXML,
+  parseImportText,
+} from "./helpers.js";
+
+/**
+ * Meals Module (better version)
+ * - Weekly planner for any week of the year (jump by date, prev/next, today)
+ * - Recipe library (structured ingredient helper + raw text)
+ * - Receipts (store + date + items). You can pull receipt items into grocery list.
+ * - Grocery list inside the module + export ingredients from planner/recipes/receipts
+ * - Emits an eventBus event: "grocery:addItems" with { items: string[], source }
+ *   (future grocery module can subscribe)
+ */
+
+function uid() {
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+/**
+ * Format date as MM/DD/YY
+ */
+function fmtDayDate(dt) {
+  const d = typeof dt === "string" ? new Date(dt) : dt;
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const y = String(d.getFullYear()).slice(-2);
+  return `${m}/${day}/${y}`;
+}
+
+/**
+ * Pick the newer of two items based on updatedAt or createdAt.
+ */
+function pickNewer(a, b) {
+  const aTime = a.updatedAt || a.createdAt || "";
+  const bTime = b.updatedAt || b.createdAt || "";
+  return aTime >= bTime ? a : b;
+}
+
+/**
+ * Merge two arrays by id, keeping the newest version of each item.
+ */
+function mergeById(existing, incoming) {
+  const map = new Map();
+  for (const item of existing) {
+    if (item.id) map.set(item.id, item);
+  }
+  for (const item of incoming) {
+    if (!item.id) continue;
+    const current = map.get(item.id);
+    map.set(item.id, current ? pickNewer(current, item) : item);
+  }
+  return Array.from(map.values());
+}
+
+/**
+ * Merge planner weeks: for each week, merge days; for each day, merge slots.
+ * Imported slots don't wipe existing ones unless same slot key is present.
+ */
+function mergeWeeks(existingWeeks, incomingWeeks) {
+  const result = { ...existingWeeks };
+  
+  for (const [weekKey, incomingWeek] of Object.entries(incomingWeeks || {})) {
+    const existingWeek = result[weekKey] || { days: {} };
+    const mergedDays = { ...existingWeek.days };
+    
+    for (const [dayName, incomingDay] of Object.entries(incomingWeek.days || {})) {
+      const existingDay = mergedDays[dayName] || {};
+      // Merge slot by slot - incoming slots override only their own keys
+      mergedDays[dayName] = { ...existingDay, ...incomingDay };
+    }
+    
+    result[weekKey] = { ...existingWeek, days: mergedDays };
+  }
+  
+  return result;
+}
+
+/**
+ * Merge grocery items: merge by id if present, otherwise dedupe by lowercase text.
+ */
+function mergeGrocery(existingGrocery, incomingGrocery) {
+  const existingItems = existingGrocery.items || [];
+  const incomingItems = incomingGrocery.items || [];
+  
+  // Build map of existing items by id and by text
+  const byId = new Map();
+  const byText = new Map();
+  
+  for (const item of existingItems) {
+    if (item.id) byId.set(item.id, item);
+    const key = (item.text || "").toLowerCase().trim();
+    if (key) byText.set(key, item);
+  }
+  
+  // Merge incoming items
+  for (const item of incomingItems) {
+    if (item.id && byId.has(item.id)) {
+      // Update existing item by id
+      const existing = byId.get(item.id);
+      byId.set(item.id, pickNewer(existing, item));
+    } else {
+      const key = (item.text || "").toLowerCase().trim();
+      if (key && byText.has(key)) {
+        // Dedupe by text - skip if already exists
+        continue;
+      }
+      // Add new item
+      const newId = item.id || uid();
+      byId.set(newId, { ...item, id: newId });
+      if (key) byText.set(key, item);
+    }
+  }
+  
+  return {
+    ...existingGrocery,
+    items: Array.from(byId.values()),
+  };
+}
+
+/**
+ * Main merge function: merge imported data INTO existing data.
+ */
+function mergeMealsData(existing, imported) {
+  return {
+    ...existing,
+    recipes: mergeById(existing.recipes || [], imported.recipes || []),
+    receipts: mergeById(existing.receipts || [], imported.receipts || []),
+    planner: {
+      ...existing.planner,
+      weeks: mergeWeeks(existing.planner?.weeks || {}, imported.planner?.weeks || {}),
+    },
+    grocery: mergeGrocery(existing.grocery || { items: [] }, imported.grocery || { items: [] }),
+    settings: imported.settings ? { ...existing.settings, ...imported.settings } : existing.settings,
+  };
+}
+
+function useModuleData(ctx, defaultFn) {
+  const [rev, setRev] = useState(0);
+  const data = useMemo(() => migrateData(ctx.store.get(defaultFn())), [ctx, defaultFn, rev]);
+  
+  const set = (val) => {
+    ctx.store.set(migrateData(val));
+    setRev((r) => r + 1);
+  };
+  
+  const update = (fn) => {
+    const cur = ctx.store.get(defaultFn());
+    const next = fn(migrateData(cur));
+    ctx.store.set(migrateData(next));
+    setRev((r) => r + 1);
+  };
+  
+  return { data, set, update };
+}
+
+// -----------------------------
+// ctx compatibility helpers
+// -----------------------------
+function getShared(ctx) {
+  return ctx.sharedState || ctx.shared;
+}
+function sharedSet(ctx, patchOrKey, maybeVal) {
+  const shared = getShared(ctx);
+  if (!shared) return;
+
+  if (typeof shared.set === "function") {
+    // If called with (ctx, "key", value), convert to object
+    if (typeof patchOrKey === "string") {
+      return shared.set({ [patchOrKey]: maybeVal });
+    }
+    // Otherwise pass object directly (no merge function)
+    return shared.set(patchOrKey || {});
+  }
+}
+
+function IconTab({ active, onClick, icon: Icon, label }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`btn ${active ? "btnPrimary" : ""}`}
+      title={label}
+      aria-pressed={active}
+    >
+      <Icon size={16} />
+      <span className="hidden sm:inline">{label}</span>
+    </button>
+  );
+}
+
+function Pill({ children }) {
+  return <span className="inline-flex items-center rounded-xl px-2 py-1 text-xs bg-white/10 border border-white/10">{children}</span>;
+}
+
+function Section({ title, right, children }) {
+  return (
+    <div className="glass rounded-3xl p-4 md:p-5">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="font-semibold">{title}</div>
+        {right}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function EmptyHint({ children }) {
+  return <div className="text-sm opacity-70">{children}</div>;
+}
+
+function useContainerWidth(ref) {
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) setW(e.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return w;
+}
 
 export default function MealsModule({ ctx }) {
+  const containerRef = useRef(null);
+  const fileRef = useRef(null);
+
+  // --- Load and persist data using unified pattern ---
+  const { data, set: setStore, update: updateStore } = useModuleData(ctx, defaultData);
+
+  // Module-scoped CSS for select dropdowns
+  useEffect(() => {
+    const styleId = "meals-select-styles";
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      .meals-module-select {
+        background-color: rgba(20, 20, 24, 0.95) !important;
+        color: rgba(255, 255, 255, 0.92) !important;
+      }
+      .meals-module-select option {
+        background-color: rgba(20, 20, 24, 0.95);
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .meals-module-select option:hover,
+      .meals-module-select option:checked {
+        background-color: rgba(40, 40, 44, 0.95);
+      }
+    `;
+    document.head.appendChild(style);
+
+    return () => {
+      const el = document.getElementById(styleId);
+      if (el) el.remove();
+    };
+  }, []);
+
+  const settings = data.settings || defaultData().settings;
+
+  // UI state (restore from persisted data)
+  const [tab, setTab] = useState(() => data.ui?.lastTab || "planner");
+  const [weekStart, setWeekStart] = useState(() => 
+    data.ui?.lastWeekStart || getWeekKey(new Date(), settings.weekStartsOnMonday)
+  );
+  const [activeDay, setActiveDay] = useState(() => 
+    data.ui?.lastActiveDay || DAYS[(new Date().getDay() + 6) % 7] || "Monday"
+  );
+
+  // ensure week exists
+  useEffect(() => {
+    updateStore((prev) => {
+      const d = prev;
+      const wk = d.planner.weeks[weekStart];
+      if (wk) return d;
+      return {
+        ...d,
+        planner: {
+          ...d.planner,
+          weeks: { ...d.planner.weeks, [weekStart]: { days: {} } },
+        },
+      };
+    });
+  }, [weekStart, updateStore]);
+
+  // Persist UI state (tab, week, day) to module data
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      updateStore(prev => ({
+        ...prev,
+        ui: { lastTab: tab, lastWeekStart: weekStart, lastActiveDay: activeDay }
+      }));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [tab, weekStart, activeDay, updateStore]);
+
+  // Computed values needed for shared state publishing
+  const recipesById = useMemo(() => {
+    const m = new Map();
+    for (const r of data.recipes) m.set(r.id, r);
+    return m;
+  }, [data.recipes]);
+
+  const weekDays = data.planner.weeks?.[weekStart]?.days || {};
+  const dayEntry = weekDays[activeDay] || {};
+
+  // BRIDGE: Subscribe to selectedDate from Calendar
+  const shared = getShared(ctx);
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const s = shared?.get?.() || {};
+    return s.selectedDate || new Date().toISOString().slice(0, 10);
+  });
+
+  useEffect(() => {
+    if (!shared?.subscribe) return;
+    return shared.subscribe((s) => {
+      const nextDate = s.selectedDate || new Date().toISOString().slice(0, 10);
+      setSelectedDate(nextDate);
+    });
+  }, [shared]);
+
+  // BRIDGE: Publish mealsForSelectedDate whenever data or selectedDate changes
+  useEffect(() => {
+    if (!shared?.set) return;
+
+    // Helper: compute meals for a given date string
+    const getMealsForDate = (dateStr) => {
+      try {
+        const date = new Date(dateStr + "T12:00:00");
+        const weekStartsOnMonday = data.settings?.weekStartsOnMonday ?? true;
+        const weekKey = getWeekKey(date, weekStartsOnMonday);
+        
+        // Get day name (0=Sunday, 1=Monday, ..., 6=Saturday)
+        // DAYS array is Monday-based: ["Monday", "Tuesday", ...]
+        const dayIndex = (date.getDay() + 6) % 7; // Convert to Monday=0
+        const dayName = DAYS[dayIndex];
+
+        const week = data.planner.weeks?.[weekKey];
+        if (!week) return [];
+
+        const day = week.days?.[dayName];
+        if (!day) return [];
+
+        return SLOTS.map((slot) => {
+          const slotData = day[slot.key];
+          if (!slotData) return null;
+
+          if (slotData.type === "text") {
+            return { slot: slot.label, name: slotData.text || "(Meal)" };
+          }
+
+          if (slotData.type === "recipe") {
+            const recipe = recipesById.get(slotData.id);
+            if (!recipe) return null;
+            return {
+              slot: slot.label,
+              name: recipe.name || "(Recipe)",
+              notes: recipe.notes || null,
+            };
+          }
+
+          return null;
+        }).filter(Boolean);
+      } catch (err) {
+        console.error("[Meals bridge] getMealsForDate error:", err);
+        return [];
+      }
+    };
+
+    const mealsForSelectedDate = getMealsForDate(selectedDate);
+    
+    sharedSet(ctx, {
+      mealsForSelectedDate,
+      mealsSelectedDate: selectedDate,
+    });
+
+    // TODO: remove debug log
+    console.log("MEALS->shared", selectedDate, mealsForSelectedDate.length, "meals");
+  }, [ctx, shared, data, selectedDate, recipesById]);
+
+  // Recipe editor
+  const [editingRecipeId, setEditingRecipeId] = useState(null);
+  const [recipeName, setRecipeName] = useState("");
+  const [recipeIngredientsText, setRecipeIngredientsText] = useState("");
+  const [recipeNotes, setRecipeNotes] = useState("");
+  const [recipeTags, setRecipeTags] = useState("");
+
+  // Receipt editor
+  const [editingReceiptId, setEditingReceiptId] = useState(null);
+  const [receiptStore, setReceiptStore] = useState("");
+  const [receiptDate, setReceiptDate] = useState("");
+  const [receiptItemsText, setReceiptItemsText] = useState("");
+  const [receiptNotes, setReceiptNotes] = useState("");
+  const [receiptTotal, setReceiptTotal] = useState("");
+
+  // Grocery
+  const [groceryDraft, setGroceryDraft] = useState("");
+  const [grocerySearch, setGrocerySearch] = useState("");
+
+  // Compact mode detection and slot editor state
+  const containerWidth = useContainerWidth(containerRef);
+  const isCompact = containerWidth > 0 && containerWidth < 900;
+  const [compactSlotEditor, setCompactSlotEditor] = useState(null); // { day, slot }
+
+  const weekLabel = useMemo(() => fmtRangeLabel(weekStart), [weekStart]);
+
+  const moveWeek = (dir) => {
+    const dt = addDays(weekStart, dir * 7);
+    setWeekStart(getWeekKey(dt, settings.weekStartsOnMonday));
+  };
+
+  const jumpToDate = (isoDate) => {
+    if (!isoDate) return;
+    const [y, m, d] = isoDate.split("-").map(Number);
+    const dt = new Date(y, (m || 1) - 1, d || 1);
+    setWeekStart(getWeekKey(dt, settings.weekStartsOnMonday));
+    // also pick the day of that date
+    const dayIdx = (dt.getDay() + 6) % 7;
+    setActiveDay(DAYS[dayIdx] || "Monday");
+  };
+
+  const setSlot = (slotKey, slotEntryOrNull) => {
+    updateStore((prev) => {
+      const d = prev;
+      const wk = d.planner.weeks[weekStart] || { days: {} };
+      const curDay = wk.days[activeDay] || {};
+      const nextDay = { ...curDay };
+      if (!slotEntryOrNull) delete nextDay[slotKey];
+      else nextDay[slotKey] = slotEntryOrNull;
+
+      const nextDays = { ...wk.days };
+      if (Object.keys(nextDay).length) nextDays[activeDay] = nextDay;
+      else delete nextDays[activeDay];
+
+      return {
+        ...d,
+        planner: {
+          ...d.planner,
+          weeks: { ...d.planner.weeks, [weekStart]: { ...wk, days: nextDays } },
+        },
+      };
+    });
+  };
+
+  const setSlotForDay = (dayName, slotKey, slotEntryOrNull) => {
+    updateStore((prev) => {
+      const d = prev;
+      const wk = d.planner.weeks[weekStart] || { days: {} };
+      const curDay = wk.days[dayName] || {};
+      const nextDay = { ...curDay };
+      if (!slotEntryOrNull) delete nextDay[slotKey];
+      else nextDay[slotKey] = slotEntryOrNull;
+
+      const nextDays = { ...wk.days };
+      if (Object.keys(nextDay).length) nextDays[dayName] = nextDay;
+      else delete nextDays[dayName];
+
+      return {
+        ...d,
+        planner: {
+          ...d.planner,
+          weeks: { ...d.planner.weeks, [weekStart]: { ...wk, days: nextDays } },
+        },
+      };
+    });
+  };
+
+  const clearDay = () => {
+    updateStore((prev) => {
+      const d = prev;
+      const wk = d.planner.weeks[weekStart] || { days: {} };
+      const nextDays = { ...wk.days };
+      delete nextDays[activeDay];
+      return {
+        ...d,
+        planner: { ...d.planner, weeks: { ...d.planner.weeks, [weekStart]: { ...wk, days: nextDays } } },
+      };
+    });
+  };
+
+  // --- Grocery generation ---
+  const getGroceryLinesForWeek = () => {
+    const wk = data.planner.weeks?.[weekStart]?.days || {};
+    const all = [];
+
+    for (const day of DAYS) {
+      const entry = wk[day];
+      if (!entry) continue;
+
+      for (const slot of SLOTS) {
+        const s = entry?.[slot.key];
+        if (!s) continue;
+        if (s.type === "text") continue;
+
+        const r = recipesById.get(s.id);
+        if (!r) continue;
+        all.push(...splitLines(r.ingredientsText));
+      }
+    }
+
+    const deduped = settings.autoDedupeGrocery ? countAndDedupe(all) : all.map((l) => l.trim()).filter(Boolean);
+    return deduped;
+  };
+
+  const addItemsToGrocery = (lines, source = "manual") => {
+    const items = (lines || []).map((t) => String(t || "").trim()).filter(Boolean);
+    if (!items.length) return;
+
+    updateStore((prev) => {
+      const d = prev;
+      const existing = d.grocery.items || [];
+      const next = [
+        ...items.map((text) => ({ id: uid(), text, done: false, createdAt: new Date().toISOString(), source })),
+        ...existing,
+      ];
+      return { ...d, grocery: { ...d.grocery, items: next } };
+    });
+
+    // publish (optional)
+    ctx.eventBus?.emit?.("grocery:addItems", { items, source });
+  };
+
+  const addWeekGroceries = () => addItemsToGrocery(getGroceryLinesForWeek(), `planner:${weekStart}`);
+
+  const addReceiptToGroceries = (receiptId) => {
+    const r = data.receipts.find((x) => x.id === receiptId);
+    if (!r) return;
+    addItemsToGrocery(splitLines(r.itemsText), `receipt:${receiptId}`);
+  };
+
+  // --- Recipe CRUD ---
+  const startNewRecipe = () => {
+    setEditingRecipeId(""); // Use empty string to indicate "new recipe" mode
+    setRecipeName("");
+    setRecipeIngredientsText("");
+    setRecipeNotes("");
+    setRecipeTags("");
+    setTab("recipes");
+  };
+
+  const editRecipe = (r) => {
+    setEditingRecipeId(r.id);
+    setRecipeName(r.name || "");
+    setRecipeIngredientsText(r.ingredientsText || "");
+    setRecipeNotes(r.notes || "");
+    setRecipeTags((r.tags || []).join(", "));
+    setTab("recipes");
+  };
+
+  const saveRecipe = () => {
+    const name = recipeName.trim();
+    if (!name) return;
+
+    const tags = recipeTags
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 20);
+
+    updateStore((prev) => {
+      const d = prev;
+      const now = new Date().toISOString();
+
+      if (editingRecipeId) {
+        return {
+          ...d,
+          recipes: d.recipes.map((r) =>
+            r.id === editingRecipeId
+              ? { ...r, name, ingredientsText: recipeIngredientsText, notes: recipeNotes, tags, updatedAt: now }
+              : r
+          ),
+        };
+      }
+      const r = {
+        id: uid(),
+        name,
+        ingredientsText: recipeIngredientsText,
+        notes: recipeNotes,
+        servings: 0,
+        tags,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return { ...d, recipes: [r, ...d.recipes] };
+    });
+
+    setEditingRecipeId(null);
+    setRecipeName("");
+    setRecipeIngredientsText("");
+    setRecipeNotes("");
+    setRecipeTags("");
+  };
+
+  const deleteRecipe = (id) => {
+    updateStore((prev) => {
+      const d = prev;
+
+      // remove from planner
+      const weeks = { ...d.planner.weeks };
+      for (const [wkKey, wkObj] of Object.entries(weeks)) {
+        const days = { ...(wkObj?.days || {}) };
+        let wkChanged = false;
+
+        for (const [dayName, entry] of Object.entries(days)) {
+          const next = { ...entry };
+          let changed = false;
+
+          for (const k of ["breakfast", "lunch", "dinner"]) {
+            if (next[k]?.type === "recipe" && next[k]?.id === id) {
+              delete next[k];
+              changed = true;
+            }
+          }
+
+          if (changed) {
+            wkChanged = true;
+            if (Object.keys(next).length) days[dayName] = next;
+            else delete days[dayName];
+          }
+        }
+
+        if (wkChanged) weeks[wkKey] = { ...wkObj, days };
+      }
+
+      return {
+        ...d,
+        recipes: d.recipes.filter((r) => r.id !== id),
+        planner: { ...d.planner, weeks },
+      };
+    });
+  };
+
+  // --- Ingredient helper actions ---
+  const autoFormatIngredients = () => {
+    const lines = splitLines(recipeIngredientsText);
+    const formatted = lines
+      .map(parseIngredientLine)
+      .map(stringifyIngredient)
+      .join("\n");
+    setRecipeIngredientsText(formatted);
+  };
+
+  // --- Receipt CRUD ---
+  const startNewReceipt = () => {
+    setEditingReceiptId(null);
+    setReceiptStore("");
+    setReceiptDate(new Date().toISOString().slice(0, 10));
+    setReceiptItemsText("");
+    setReceiptNotes("");
+    setReceiptTotal("");
+    setTab("receipts");
+  };
+
+  const editReceipt = (r) => {
+    setEditingReceiptId(r.id);
+    setReceiptStore(r.store || "");
+    setReceiptDate(r.date || "");
+    setReceiptItemsText(r.itemsText || "");
+    setReceiptNotes(r.notes || "");
+    setReceiptTotal(r.total || "");
+    setTab("receipts");
+  };
+
+  const saveReceipt = () => {
+    if (!receiptStore.trim() && !receiptItemsText.trim()) return;
+    const now = new Date().toISOString();
+
+    updateStore((prev) => {
+      const d = prev;
+      if (editingReceiptId) {
+        return {
+          ...d,
+          receipts: d.receipts.map((r) =>
+            r.id === editingReceiptId
+              ? { ...r, store: receiptStore, date: receiptDate, itemsText: receiptItemsText, notes: receiptNotes, total: receiptTotal, updatedAt: now }
+              : r
+          ),
+        };
+      }
+      const r = {
+        id: uid(),
+        store: receiptStore,
+        date: receiptDate,
+        itemsText: receiptItemsText,
+        notes: receiptNotes,
+        total: receiptTotal,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return { ...d, receipts: [r, ...d.receipts] };
+    });
+
+    setEditingReceiptId(null);
+    setReceiptStore("");
+    setReceiptDate("");
+    setReceiptItemsText("");
+    setReceiptNotes("");
+    setReceiptTotal("");
+  };
+
+  const deleteReceipt = (id) => {
+    updateStore((prev) => {
+      const d = prev;
+      return { ...d, receipts: d.receipts.filter((r) => r.id !== id) };
+    });
+  };
+
+  // --- Grocery list actions ---
+  const addGroceryDraft = () => {
+    const line = groceryDraft.trim();
+    if (!line) return;
+    addItemsToGrocery([line], "manual");
+    setGroceryDraft("");
+  };
+
+  const toggleGrocery = (id) => {
+    updateStore((prev) => {
+      const d = prev;
+      return {
+        ...d,
+        grocery: {
+          ...d.grocery,
+          items: d.grocery.items.map((it) => (it.id === id ? { ...it, done: !it.done } : it)),
+        },
+      };
+    });
+  };
+
+  const removeGrocery = (id) => {
+    updateStore((prev) => {
+      const d = prev;
+      return { ...d, grocery: { ...d.grocery, items: d.grocery.items.filter((it) => it.id !== id) } };
+    });
+  };
+
+  const clearDone = () => {
+    updateStore((prev) => {
+      const d = prev;
+      return { ...d, grocery: { ...d.grocery, items: d.grocery.items.filter((it) => !it.done) } };
+    });
+  };
+
+  // --- Export / Import ---
+  const doExport = () => {
+    const xml = toXML(data);
+    const blob = new Blob([xml], { type: "application/xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `meals-export-${getWeekKey(new Date(), settings.weekStartsOnMonday)}.xml`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const triggerImport = () => fileRef.current?.click();
+
+  const importAdd = async (file) => {
+    try {
+      const text = await file.text();
+      const imported = parseImportText(text);
+      updateStore((prev) => mergeMealsData(prev, imported));
+    } catch (e) {
+      console.error(e);
+      alert("Import failed. Please choose a valid Meals export (XML) or a JSON backup.");
+    }
+  };
+
+  // --- Derived UI lists ---
+  const recipeSearchRef = useRef(null);
+  const [recipeSearch, setRecipeSearch] = useState("");
+  const filteredRecipes = useMemo(() => {
+    const q = recipeSearch.trim().toLowerCase();
+    if (!q) return data.recipes;
+    return data.recipes.filter((r) => (r.name || "").toLowerCase().includes(q) || (r.tags || []).join(" ").toLowerCase().includes(q));
+  }, [data.recipes, recipeSearch]);
+
+  const filteredGrocery = useMemo(() => {
+    const q = grocerySearch.trim().toLowerCase();
+    const arr = data.grocery.items || [];
+    if (!q) return arr;
+    return arr.filter((it) => (it.text || "").toLowerCase().includes(q));
+  }, [data.grocery.items, grocerySearch]);
+
+  // --- Planner helpers ---
+  const slotLabel = (slot) => {
+    const s = dayEntry?.[slot.key];
+    if (!s) return "—";
+    if (s.type === "text") return s.text || "—";
+    const r = recipesById.get(s.id);
+    return r?.name || "Recipe missing";
+  };
+
+  const slotIngredientsPreview = (slot) => {
+    const s = dayEntry?.[slot.key];
+    if (!s || s.type !== "recipe") return "";
+    return recipesById.get(s.id)?.ingredientsText || "";
+  };
+
   return (
-    <div className="space-y-3">
-      <div className="text-lg font-semibold">Meals</div>
-      <div className="text-sm opacity-80">
-        Placeholder module stub. Enable it in Settings → Modules.
+    <div className="h-full flex flex-col gap-3">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-2xl bg-white/10 border border-white/10">
+            <UtensilsCrossed size={18} />
+          </div>
+          <div>
+            <div className="font-semibold text-lg">Meals</div>
+            <div className="text-xs opacity-70">
+              Planner • recipes • grocery list
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button className="iconBtn" onClick={doExport} title="Export meals data (XML)">
+            <Download size={18} />
+          </button>
+          <button className="iconBtn" onClick={triggerImport} title="Import meals data (adds / merges)">
+            <Upload size={18} />
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xml,.json,application/xml,application/json,text/xml,text/json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) importAdd(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
       </div>
-      <div className="text-xs opacity-70">
-        Storage lives in <span className="opacity-90">db.modules.meals</span> via ctx.store.
+
+      {/* Tabs */}
+      <div className="flex flex-wrap gap-2">
+        <IconTab icon={CalendarDays} label="Planner" active={tab === "planner"} onClick={() => setTab("planner")} />
+        <IconTab icon={BookOpen} label="Recipes" active={tab === "recipes"} onClick={() => setTab("recipes")} />
+        <IconTab icon={ShoppingCart} label="Grocery" active={tab === "grocery"} onClick={() => setTab("grocery")} />
+      </div>
+
+      {/* Content */}
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-auto pr-1">
+        {tab === "planner" && isCompact && (
+          <Section
+            title="Week Planner"
+            right={
+              <div className="flex items-center gap-2">
+                <button className="iconBtn" onClick={() => moveWeek(-1)} title="Previous week">
+                  <ChevronLeft size={18} />
+                </button>
+                <button className="btn" onClick={() => jumpToDate(new Date().toISOString().slice(0, 10))} title="Jump to this week">
+                  Today
+                </button>
+                <button className="iconBtn" onClick={() => moveWeek(1)} title="Next week">
+                  <ChevronRight size={18} />
+                </button>
+              </div>
+            }
+          >
+            <div className="text-xs opacity-70 mb-3">{weekLabel}</div>
+
+            {/* Compact Week Grid */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr>
+                    <th className="text-left p-2 opacity-70"></th>
+                    {DAYS.map((d, idx) => {
+                      const dayDate = addDays(weekStart, idx);
+                      const dateStr = fmtDayDate(dayDate);
+                      return (
+                        <th key={d} className="text-center p-2 opacity-70 font-medium">
+                          <div>{d.slice(0, 3)}</div>
+                          <div className="text-[10px] opacity-60">{dateStr}</div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {SLOTS.map((slot) => (
+                    <tr key={slot.key}>
+                      <td className="p-2 opacity-70 font-medium">{slot.label}</td>
+                      {DAYS.map((day) => {
+                        const dayData = weekDays[day] || {};
+                        const slotData = dayData[slot.key];
+                        let label = "—";
+                        if (slotData) {
+                          if (slotData.type === "text") label = slotData.text;
+                          else {
+                            const r = recipesById.get(slotData.id);
+                            label = r?.name || "?";
+                          }
+                        }
+                        const isEditing = compactSlotEditor?.day === day && compactSlotEditor?.slot === slot.key;
+                        return (
+                          <td key={day} className="p-1">
+                            <button
+                              onClick={() => setCompactSlotEditor({ day, slot: slot.key })}
+                              className={`w-full px-2 py-1 rounded-lg text-xs truncate ${
+                                isEditing
+                                  ? "bg-white/20 border border-white/30"
+                                  : "bg-white/5 border border-white/10 hover:bg-white/10"
+                              }`}
+                              title={label}
+                            >
+                              {label === "—" ? "+" : label}
+                            </button>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Inline Slot Editor */}
+            {compactSlotEditor && (
+              <div className="mt-3 p-3 rounded-2xl bg-white/10 border border-white/15">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-semibold text-sm">
+                    {compactSlotEditor.day} • {SLOTS.find(s => s.key === compactSlotEditor.slot)?.label}
+                  </div>
+                  <button
+                    className="iconBtn !w-6 !h-6"
+                    onClick={() => setCompactSlotEditor(null)}
+                    title="Close"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                {(() => {
+                  const dayData = weekDays[compactSlotEditor.day] || {};
+                  const slotData = dayData[compactSlotEditor.slot];
+                  const selectedId = slotData?.type === "recipe" ? slotData.id : "";
+                  const selectedText = slotData?.type === "text" ? slotData.text : "";
+                  
+                  const applySlot = (val) => {
+                    setSlotForDay(compactSlotEditor.day, compactSlotEditor.slot, val);
+                  };
+
+                  return (
+                    <div className="space-y-2">
+                      <select
+                        value={selectedId}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          applySlot(v ? { type: "recipe", id: v } : null);
+                        }}
+                        className="meals-module-select w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                      >
+                        <option value="">Select recipe…</option>
+                        {data.recipes.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        value={selectedText}
+                        onChange={(e) => applySlot(e.target.value ? { type: "text", text: e.target.value } : null)}
+                        placeholder="Or quick text (e.g., leftovers)"
+                        className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                      />
+                      <button
+                        className="btn w-full"
+                        onClick={() => {
+                          applySlot(null);
+                          setCompactSlotEditor(null);
+                        }}
+                      >
+                        <X size={14} /> Clear
+                      </button>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Grocery Summary */}
+            <div className="mt-3 p-3 rounded-2xl bg-white/5 border border-white/10">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold">Grocery Preview</div>
+                <button className="btn !px-2 !py-1 !text-xs btnPrimary" onClick={addWeekGroceries}>
+                  <ShoppingCart size={14} /> Add to Grocery
+                </button>
+              </div>
+              <div className="text-xs opacity-70 space-y-1">
+                {getGroceryLinesForWeek().slice(0, 6).map((line, i) => (
+                  <div key={i}>• {line}</div>
+                ))}
+                {getGroceryLinesForWeek().length > 6 && (
+                  <div className="opacity-50">+ {getGroceryLinesForWeek().length - 6} more…</div>
+                )}
+                {getGroceryLinesForWeek().length === 0 && <div className="opacity-50">No ingredients yet</div>}
+              </div>
+            </div>
+          </Section>
+        )}
+
+        {tab === "planner" && !isCompact && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            {/* Left: day list */}
+            <Section
+              title="Week"
+              right={
+                <div className="flex items-center gap-2">
+                  <button className="iconBtn" onClick={() => moveWeek(-1)} title="Previous week">
+                    <ChevronLeft size={18} />
+                  </button>
+                  <button className="iconBtn" onClick={() => moveWeek(1)} title="Next week">
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+              }
+            >
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div>
+                  <div className="text-sm font-semibold">Week of {weekStart}</div>
+                  <div className="text-xs opacity-70">{weekLabel}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button className="btn" onClick={() => jumpToDate(new Date().toISOString().slice(0, 10))} title="Jump to this week">
+                    Today
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 mb-3">
+                <input
+                  type="date"
+                  className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  onChange={(e) => jumpToDate(e.target.value)}
+                  aria-label="Jump to date"
+                />
+              </div>
+
+              <div className="space-y-2">
+                {DAYS.map((d) => {
+                  const dayDate = addDays(weekStart, DAYS.indexOf(d));
+                  const dateStr = fmtDayDate(dayDate);
+                  const entry = weekDays[d] || {};
+                  const parts = SLOTS.map((s) => {
+                    const val = entry?.[s.key];
+                    if (!val) return "";
+                    if (val.type === "text") return `${s.label[0]}: ${val.text}`;
+                    const r = recipesById.get(val.id);
+                    return `${s.label[0]}: ${r?.name || "Missing"}`;
+                  }).filter(Boolean);
+                  const subtitle = parts.join(" • ");
+
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => setActiveDay(d)}
+                      className={`w-full text-left rounded-2xl px-3 py-2 border ${
+                        activeDay === d ? "bg-white/15 border-white/20" : "bg-white/5 border-white/10 hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="text-sm font-medium">{d} {dateStr}</div>
+                      <div className="text-xs opacity-70 truncate">{subtitle || "—"}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button className="btn btnPrimary" onClick={addWeekGroceries} title="Add ingredients from this week into the grocery list">
+                  <Sparkles size={16} /> Add week → Grocery
+                </button>
+              </div>
+
+              <div className="mt-3 text-xs opacity-70">
+                Tip: Plan meals for any week. Ingredients come from recipes. Use “Add week → Grocery” to build your list.
+              </div>
+            </Section>
+
+            {/* Right: active day */}
+            <div className="lg:col-span-2 flex flex-col gap-3">
+              <Section
+                title={activeDay}
+                right={
+                  <div className="flex items-center gap-2">
+                    <button className="btn" onClick={startNewRecipe} title="Create a new recipe">
+                      <Plus size={16} /> New recipe
+                    </button>
+                    <button className="btn" onClick={clearDay} title="Clear this day">
+                      <X size={16} /> Clear day
+                    </button>
+                  </div>
+                }
+              >
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {SLOTS.map((slot) => {
+                    const selected = dayEntry?.[slot.key];
+                    const selectedId = selected?.type === "recipe" ? selected.id : "";
+                    const selectedText = selected?.type === "text" ? selected.text : "";
+
+                    return (
+                      <div key={slot.key} className="rounded-2xl p-3 bg-white/5 border border-white/10">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="font-semibold text-sm">{slot.label}</div>
+                          <Pill>{selected ? (selected.type === "recipe" ? "Recipe" : "Note") : "Empty"}</Pill>
+                        </div>
+
+                        {/* Choose recipe */}
+                        <select
+                          value={selectedId}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (!v) return setSlot(slot.key, null);
+                            setSlot(slot.key, { type: "recipe", id: v });
+                          }}
+                          className="meals-module-select w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                          title="Select a recipe"
+                        >
+                          <option value="">Select recipe…</option>
+                          {data.recipes.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {r.name}
+                            </option>
+                          ))}
+                        </select>
+
+                        <div className="mt-2">
+                          <div className="text-xs opacity-70 mb-1">Or quick text (leftovers, takeout)</div>
+                          <input
+                            value={selectedText}
+                            onChange={(e) => setSlot(slot.key, e.target.value ? { type: "text", text: e.target.value } : null)}
+                            placeholder="e.g., leftovers"
+                            className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                          />
+                        </div>
+
+                        <div className="mt-2 text-xs opacity-70">Planned: <span className="opacity-90">{slotLabel(slot)}</span></div>
+
+                        {!!slotIngredientsPreview(slot) && (
+                          <div className="mt-2">
+                            <div className="text-xs opacity-70 mb-1">Ingredients</div>
+                            <div className="text-xs whitespace-pre-wrap max-h-28 overflow-auto rounded-xl p-2 bg-black/10 border border-white/10">
+                              {slotIngredientsPreview(slot)}
+                            </div>
+                          </div>
+                        )}
+
+                        {selected?.type === "recipe" && (
+                          <div className="mt-2 flex gap-2">
+                            <button className="btn" onClick={() => editRecipe(recipesById.get(selected.id))} title="Edit recipe">
+                              <Pencil size={16} /> Edit
+                            </button>
+                            <button
+                              className="btn"
+                              onClick={() => addItemsToGrocery(splitLines(recipesById.get(selected.id)?.ingredientsText || ""), `recipe:${selected.id}`)}
+                              title="Add this recipe's ingredients to grocery list"
+                            >
+                              <ShoppingCart size={16} /> Add ingredients
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </Section>
+
+              <Section
+                title="Grocery preview (this week)"
+                right={
+                  <button className="btn btnPrimary" onClick={addWeekGroceries}>
+                    <ShoppingCart size={16} /> Add to Grocery
+                  </button>
+                }
+              >
+                <div className="text-xs opacity-70 mb-2">
+                  Built from recipe ingredients for all planned meals this week {settings.autoDedupeGrocery ? "(deduped + counts)." : "(not deduped)."}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {getGroceryLinesForWeek().length ? (
+                    getGroceryLinesForWeek().slice(0, 18).map((line) => (
+                      <div key={line} className="rounded-xl px-3 py-2 bg-white/5 border border-white/10 text-sm">
+                        {line}
+                      </div>
+                    ))
+                  ) : (
+                    <EmptyHint>Nothing yet — add recipes + plan some meals.</EmptyHint>
+                  )}
+                </div>
+                {getGroceryLinesForWeek().length > 18 && (
+                  <div className="text-xs opacity-60 mt-2">Showing first 18 items…</div>
+                )}
+              </Section>
+            </div>
+          </div>
+        )}
+
+        {tab === "recipes" && (
+          <Section
+            title="Recipes"
+            right={
+              <button className="btn btnPrimary" onClick={startNewRecipe}>
+                <Plus size={16} /> New Recipe
+              </button>
+            }
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <Search size={16} className="opacity-70" />
+              <input
+                ref={recipeSearchRef}
+                value={recipeSearch}
+                onChange={(e) => setRecipeSearch(e.target.value)}
+                placeholder="Search recipes..."
+                className="flex-1 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+              />
+            </div>
+
+            {editingRecipeId !== null || recipeSearch === "" && data.recipes.length === 0 ? (
+              <div className="rounded-2xl p-4 bg-white/5 border border-white/10 space-y-3">
+                <div className="font-semibold">{editingRecipeId && editingRecipeId !== "" ? "Edit Recipe" : "New Recipe"}</div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Name</div>
+                  <input
+                    value={recipeName}
+                    onChange={(e) => setRecipeName(e.target.value)}
+                    placeholder="Spaghetti Carbonara"
+                    className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Ingredients (one per line)</div>
+                  <textarea
+                    value={recipeIngredientsText}
+                    onChange={(e) => setRecipeIngredientsText(e.target.value)}
+                    placeholder="2 cups flour&#10;1 cup sugar&#10;3 eggs"
+                    className="w-full min-h-32 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm font-mono"
+                  />
+                  <button className="btn mt-2" onClick={autoFormatIngredients}>
+                    <Sparkles size={16} /> Auto-format
+                  </button>
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Notes</div>
+                  <textarea
+                    value={recipeNotes}
+                    onChange={(e) => setRecipeNotes(e.target.value)}
+                    placeholder="Cook at 350°F for 30 minutes..."
+                    className="w-full min-h-24 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-70 mb-1">Tags (comma-separated)</div>
+                  <input
+                    value={recipeTags}
+                    onChange={(e) => setRecipeTags(e.target.value)}
+                    placeholder="dinner, pasta, Italian"
+                    className="w-full rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <button className="btn btnPrimary" onClick={saveRecipe}>
+                    <Check size={16} /> {editingRecipeId && editingRecipeId !== "" ? "Save" : "Add"}
+                  </button>
+                  {editingRecipeId && editingRecipeId !== "" && (
+                    <>
+                      <button className="btn" onClick={() => deleteRecipe(editingRecipeId)}>
+                        <Trash2 size={16} /> Delete
+                      </button>
+                      <button className="btn" onClick={() => setEditingRecipeId(null)}>
+                        <X size={16} /> Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-3 space-y-2">
+              {filteredRecipes.length ? (
+                filteredRecipes.map((r) => (
+                  <div key={r.id} className="rounded-2xl p-3 bg-white/5 border border-white/10">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold truncate">{r.name || "(Untitled)"}</div>
+                        {r.tags?.length ? (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {r.tags.map((t) => (
+                              <Pill key={t}>{t}</Pill>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="flex gap-2">
+                        <button className="iconBtn" onClick={() => editRecipe(r)} title="Edit">
+                          <Pencil size={16} />
+                        </button>
+                        <button className="iconBtn" onClick={() => deleteRecipe(r.id)} title="Delete">
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                    {r.ingredientsText && (
+                      <div className="mt-2 text-xs opacity-70 whitespace-pre-wrap max-h-20 overflow-auto rounded-xl p-2 bg-black/10">
+                        {r.ingredientsText}
+                      </div>
+                    )}
+                    {r.notes && (
+                      <div className="mt-2 text-sm opacity-80">{r.notes}</div>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <EmptyHint>
+                  {recipeSearch ? "No recipes match your search." : "No recipes yet. Click 'New Recipe' to start."}
+                </EmptyHint>
+              )}
+            </div>
+          </Section>
+        )}
+
+        {tab === "grocery" && (
+          <Section
+            title="Grocery List"
+            right={
+              <div className="flex gap-2">
+                <button className="btn" onClick={clearDone} title="Remove completed items">
+                  <Trash2 size={16} /> Clear done
+                </button>
+                <button className="btn btnPrimary" onClick={addWeekGroceries}>
+                  <Sparkles size={16} /> Add week
+                </button>
+              </div>
+            }
+          >
+            <div className="mb-3">
+              <div className="text-xs opacity-70 mb-1">Add items (one per line or comma-separated)</div>
+              <div className="flex gap-2">
+                <textarea
+                  value={groceryDraft}
+                  onChange={(e) => setGroceryDraft(e.target.value)}
+                  placeholder="Milk, bread, eggs"
+                  className="flex-1 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+                  rows={2}
+                />
+                <button
+                  className="btn btnPrimary"
+                  onClick={() => {
+                    const lines = groceryDraft.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+                    if (lines.length) {
+                      addItemsToGrocery(lines, "manual");
+                      setGroceryDraft("");
+                    }
+                  }}
+                >
+                  <Plus size={16} /> Add
+                </button>
+              </div>
+            </div>
+
+            <div className="mb-3 flex items-center gap-2">
+              <Search size={16} className="opacity-70" />
+              <input
+                value={grocerySearch}
+                onChange={(e) => setGrocerySearch(e.target.value)}
+                placeholder="Search items..."
+                className="flex-1 rounded-xl px-3 py-2 bg-white/10 border border-white/10 text-sm"
+              />
+            </div>
+
+            <div className="space-y-2">
+              {filteredGrocery.length ? (
+                filteredGrocery.map((it) => (
+                  <div
+                    key={it.id}
+                    className="rounded-2xl px-3 py-2 bg-white/5 border border-white/10 flex items-center gap-3"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={it.done || false}
+                      onChange={() => toggleGrocery(it.id)}
+                      className="rounded"
+                    />
+                    <div className={"flex-1 " + (it.done ? "line-through opacity-50" : "")}>
+                      {it.text}
+                    </div>
+                    <button className="iconBtn" onClick={() => removeGrocery(it.id)} title="Remove">
+                      <X size={16} />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <EmptyHint>
+                  {grocerySearch ? "No items match your search." : "Your grocery list is empty."}
+                </EmptyHint>
+              )}
+            </div>
+
+            <div className="mt-3 text-xs opacity-70">
+              Tip: Use "Add week" to pull ingredients from this week's meal plan.
+            </div>
+          </Section>
+        )}
       </div>
     </div>
   );

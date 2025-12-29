@@ -1,5 +1,6 @@
 import { UtensilsCrossed } from "lucide-react";
 import Module from "./module.jsx";
+import Settings from "./settings.jsx";
 import { defaultData } from "./helpers.js";
 
 export const moduleDef = {
@@ -7,6 +8,7 @@ export const moduleDef = {
   title: "Meals",
   icon: UtensilsCrossed,
   Component: Module,
+  SettingsComponent: Settings,
   defaultData,
   dependencies: [],
 };

@@ -11,6 +11,18 @@ import { applyThemeVars } from "./core/themes.js";
 import { loadDb, saveDb, createEmptyDb, DB_KEY } from "./core/dashboardStore.js";
 import { STARTER_ENABLED, createWindowForModule, createDefaultLayout } from "./core/layoutDefaults.js";
 import { loadModules } from "./core/moduleLoader.js";
+import { installKioskOskFocusFix } from "./kiosk/oskFocusFix.js";
+
+installKioskOskFocusFix();
+
+// ✅ NEW: backend-backed module state (generic for all modules)
+import {
+  getCachedModule,
+  setCachedModule,
+  hasHydrated,
+  hydrateModuleFromServer,
+  saveModuleToServer,
+} from "./core/backendStore.js";
 
 function hasAnyWindows(db) {
   return !!(db?.layout?.windows && Object.keys(db.layout.windows).length);
@@ -18,6 +30,24 @@ function hasAnyWindows(db) {
 function hasAnyEnabled(db) {
   const vis = db?.layout?.moduleVisibility ?? {};
   return Object.values(vis).some(Boolean);
+}
+
+function pruneMissingModuleWindows(db, moduleList) {
+  const known = new Set((moduleList || []).map((m) => m.id));
+
+  // remove windows for modules we no longer have
+  const wins = db.layout.windows ?? {};
+  for (const [winId, w] of Object.entries(wins)) {
+    if (!w?.moduleId || !known.has(w.moduleId)) {
+      delete wins[winId];
+    }
+  }
+
+  // clean column orders so they don't reference deleted windows
+  const cols = db.layout.columns ?? {};
+  for (const col of Object.values(cols)) {
+    col.order = (col.order ?? []).filter((id) => !!wins[id]);
+  }
 }
 
 export default function App() {
@@ -104,8 +134,35 @@ export default function App() {
       }
 
       w.column = targetColumn;
+      // Span is only supported from the LEFT column (left+middle).
+      if ((w.span ?? 1) > 1 && targetColumn !== "left") {
+        w.span = 1;
+      }
     });
   }, [mutateDb]);
+
+  const onToggleSpan = useCallback((windowId) => {
+    mutateDb((d) => {
+      const w = d.layout.windows?.[windowId];
+      if (!w) return;
+
+      const cur = w.span ?? 1;
+      if (cur > 1) {
+        w.span = 1;
+        return;
+      }
+
+      // Only allow spanning from the LEFT column (left + middle).
+      const col = w.column ?? "middle";
+      if (col !== "left") return;
+
+      w.span = 2;
+
+      // Give wide windows a bit more vertical room if they're still tiny.
+      if ((w.h ?? 0.35) < 0.5) w.h = 0.6;
+    });
+  }, [mutateDb]);
+
 
   const onResizeWindow = useCallback((windowId, nextH) => {
     mutateDb((d) => {
@@ -159,30 +216,106 @@ export default function App() {
   // Build ctx per module/window
   const buildCtxForWindow = useCallback((win) => {
     const def = getModuleDef(win.moduleId);
+
+    if (!def) {
+      // Unknown module in layout (stale localStorage). Return a safe ctx.
+      return {
+        store: { get: () => ({}), set: () => {}, patch: () => {} },
+        eventBus,
+        sharedState,
+        window: { id: win.id, moduleId: win.moduleId },
+        actions: windowActions,
+      };
+    }
+
     const windowActions = {
       hide: () => onHideWindow(win.id),
       minimize: () => onMinimizeWindow(win.id),
       popout: () => onPopoutWindow(win.id),
       close: () => onHideWindow(win.id),
     };
+
     return {
       store: {
+        // ✅ Generic backend-backed store for ALL modules
         get: (defaultValue) => {
+          const moduleId = def.id;
+
+          // If cached (from server or local seed), return it
+          const cached = getCachedModule(moduleId);
+          if (cached != null) return cached;
+
+          // Seed from local DB (fast UI)
           const fresh = loadDb();
-          const val = fresh.modules?.[def.id];
-          if (val == null) {
-            const dv = typeof defaultValue === "function" ? defaultValue() : (defaultValue ?? { version: 1 });
-            mutateDb((d) => { d.modules[def.id] = dv; });
-            return dv;
+          const localVal = fresh.modules?.[moduleId];
+
+          if (localVal != null) {
+            setCachedModule(moduleId, localVal);
+          } else {
+            const dv =
+              typeof defaultValue === "function"
+                ? defaultValue()
+                : (defaultValue ?? { version: 1 });
+
+            mutateDb((d) => { d.modules[moduleId] = dv; });
+            setCachedModule(moduleId, dv);
           }
-          return val;
+
+          // Hydrate once from server, then update cache + local DB
+          if (!hasHydrated(moduleId)) {
+            hydrateModuleFromServer(moduleId)
+              .then((serverVal) => {
+                const isServerEmpty =
+                  !serverVal ||
+                  (typeof serverVal === "object" && Object.keys(serverVal).length === 0);
+
+                const currentLocal = loadDb().modules?.[moduleId];
+                const isLocalEmpty =
+                  currentLocal == null ||
+                  (typeof currentLocal === "object" && Object.keys(currentLocal).length === 0);
+
+                // Prefer server if it has data, or local is empty
+                const shouldUseServer = (!isServerEmpty) || isLocalEmpty;
+
+                if (shouldUseServer) {
+                  setCachedModule(moduleId, serverVal);
+                  mutateDb((d) => { d.modules[moduleId] = serverVal; });
+                }
+              })
+              .catch(() => {
+                // backend down? keep local seed
+              });
+          }
+
+          return getCachedModule(moduleId);
         },
-        set: (value) => mutateDb((d) => { d.modules[def.id] = value; }),
-        patch: (partial) => mutateDb((d) => {
-          const cur = d.modules[def.id] ?? { version: 1 };
-          d.modules[def.id] = { ...cur, ...partial };
-        }),
+
+        set: (value) => {
+          const moduleId = def.id;
+
+          // local immediate
+          mutateDb((d) => { d.modules[moduleId] = value; });
+          setCachedModule(moduleId, value);
+
+          // async push
+          saveModuleToServer(moduleId, value).catch(() => {});
+        },
+
+        patch: (partial) => {
+          const moduleId = def.id;
+
+          const fresh = loadDb();
+          const cur = fresh.modules?.[moduleId] ?? { version: 1 };
+          const next = { ...cur, ...partial };
+
+          mutateDb((d) => { d.modules[moduleId] = next; });
+          setCachedModule(moduleId, next);
+
+          // async push
+          saveModuleToServer(moduleId, next).catch(() => {});
+        },
       },
+
       eventBus,
       sharedState,
       window: { id: win.id, moduleId: def.id },
@@ -267,6 +400,8 @@ export default function App() {
           onMinimizeWindow={onMinimizeWindow}
           onHideWindow={onHideWindow}
           onPopoutWindow={onPopoutWindow}
+          onToggleSpan={onToggleSpan}
+          onOpenSettings={setModuleSettingsWinId}
         />
 
         {popupWin && popupDef && popupCtx && (
@@ -294,21 +429,27 @@ export default function App() {
           />
         )}
 
-        {moduleSettingsOpen && popupWin && popupDef?.SettingsComponent && popupCtx && (
-          <div className="fixed inset-0 z-[60] p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-            <div className="h-full w-full glass rounded-[2rem] overflow-hidden flex flex-col">
-              <div className="h-16 px-4 flex items-center justify-between">
-                <div className="font-semibold">{popupDef.title} Settings</div>
-                <button className="iconBtn" onClick={() => setModuleSettingsWinId(null)} aria-label="Close Module Settings">
-                  ✕
-                </button>
-              </div>
-              <div className="flex-1 p-4 overflow-auto">
-                <popupDef.SettingsComponent ctx={popupCtx} />
+        {moduleSettingsOpen && moduleSettingsWinId && windowsById[moduleSettingsWinId] && (() => {
+          const win = windowsById[moduleSettingsWinId];
+          const def = getModuleDef(win.moduleId);
+          const ctx = buildCtxForWindow(win);
+          if (!def?.SettingsComponent || !ctx) return null;
+          return (
+            <div className="fixed inset-0 z-[60] p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
+              <div className="h-full w-full glass rounded-[2rem] overflow-hidden flex flex-col">
+                <div className="h-16 px-4 flex items-center justify-between">
+                  <div className="font-semibold">{def.title} Settings</div>
+                  <button className="iconBtn" onClick={() => setModuleSettingsWinId(null)} aria-label="Close Module Settings">
+                    ✕
+                  </button>
+                </div>
+                <div className="flex-1 p-4 overflow-auto">
+                  <def.SettingsComponent ctx={ctx} />
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
     </ErrorBoundary>
   );
@@ -321,6 +462,20 @@ function bootstrapDb(db, moduleList) {
   db.layout.windows ??= {};
   db.layout.moduleVisibility ??= {};
   db.modules ??= {};
+
+  pruneMissingModuleWindows(db, moduleList);
+
+  // ---- Window schema migration (v1.4) ----
+  // Ensure newly introduced fields exist without clobbering user choices.
+  const calWin = Object.values(db.layout.windows).find((w) => w?.moduleId === "calendar");
+  if (calWin && calWin.span == null) {
+    calWin.span = 2;
+    // If the calendar is still at the old default height, give it more room by default.
+    if ((calWin.h ?? 0.35) <= 0.36) calWin.h = 0.7;
+  }
+  for (const w of Object.values(db.layout.windows)) {
+    if (w.span == null) w.span = 1;
+  }
 
   // Ensure visibility + modules keys exist for discovered modules (default OFF)
   for (const m of moduleList) {

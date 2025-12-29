@@ -11,9 +11,11 @@ export default function Column({
   onMinimizeWindow,
   onHideWindow,
   onPopoutWindow,
+  onToggleSpan,
   onClosePopup,
   activePopup,
   columnHeightPx,
+  onOpenSettings,
 }) {
   return (
     <div className="flex flex-col gap-3 h-full">
@@ -28,9 +30,11 @@ export default function Column({
           onMinimizeWindow={onMinimizeWindow}
           onHideWindow={onHideWindow}
           onPopoutWindow={onPopoutWindow}
+          onToggleSpan={onToggleSpan}
           columnHeightPx={columnHeightPx}
           isPopup={activePopup?.id === win.id}
           onClosePopup={onClosePopup}
+          onOpenSettings={onOpenSettings}
         />
       ))}
     </div>
