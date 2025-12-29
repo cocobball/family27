@@ -1,6 +1,7 @@
 
 import React from "react";
 import { defaultData, migrateData } from "./helpers.js";
+import { isParentUnlocked, unlockParent } from "../rewards/helpers.js";
 import { RotateCcw } from "lucide-react";
 
 export default function MealsSettings({ ctx }) {
@@ -14,8 +15,15 @@ export default function MealsSettings({ ctx }) {
     set({ settings: { ...(data.settings || {}), ...partial } });
   };
 
-  const reset = () => {
-    if (!confirm("Reset Meals module data? This will delete recipes, receipts, planner, and grocery list.")) return;
+  const reset = async () => {
+    if (!isParentUnlocked()) {
+      await unlockParent();
+    }
+    if (!isParentUnlocked()) {
+      alert("Parent unlock required.");
+      return;
+    }
+    if (!confirm("Clear Meals database? This will delete recipes, planner, and grocery list.")) return;
     ctx.store.set(defaultData());
   };
 
@@ -42,7 +50,7 @@ export default function MealsSettings({ ctx }) {
       </label>
 
       <button className="btn" onClick={reset} title="Reset Meals data">
-        <RotateCcw size={16} /> Reset Meals data
+        <RotateCcw size={16} /> Clear Meals database
       </button>
 
       <div className="text-xs opacity-70">

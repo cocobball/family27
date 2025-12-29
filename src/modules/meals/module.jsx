@@ -47,6 +47,124 @@ function uid() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+/**
+ * Format date as MM/DD/YY
+ */
+function fmtDayDate(dt) {
+  const d = typeof dt === "string" ? new Date(dt) : dt;
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const y = String(d.getFullYear()).slice(-2);
+  return `${m}/${day}/${y}`;
+}
+
+/**
+ * Pick the newer of two items based on updatedAt or createdAt.
+ */
+function pickNewer(a, b) {
+  const aTime = a.updatedAt || a.createdAt || "";
+  const bTime = b.updatedAt || b.createdAt || "";
+  return aTime >= bTime ? a : b;
+}
+
+/**
+ * Merge two arrays by id, keeping the newest version of each item.
+ */
+function mergeById(existing, incoming) {
+  const map = new Map();
+  for (const item of existing) {
+    if (item.id) map.set(item.id, item);
+  }
+  for (const item of incoming) {
+    if (!item.id) continue;
+    const current = map.get(item.id);
+    map.set(item.id, current ? pickNewer(current, item) : item);
+  }
+  return Array.from(map.values());
+}
+
+/**
+ * Merge planner weeks: for each week, merge days; for each day, merge slots.
+ * Imported slots don't wipe existing ones unless same slot key is present.
+ */
+function mergeWeeks(existingWeeks, incomingWeeks) {
+  const result = { ...existingWeeks };
+  
+  for (const [weekKey, incomingWeek] of Object.entries(incomingWeeks || {})) {
+    const existingWeek = result[weekKey] || { days: {} };
+    const mergedDays = { ...existingWeek.days };
+    
+    for (const [dayName, incomingDay] of Object.entries(incomingWeek.days || {})) {
+      const existingDay = mergedDays[dayName] || {};
+      // Merge slot by slot - incoming slots override only their own keys
+      mergedDays[dayName] = { ...existingDay, ...incomingDay };
+    }
+    
+    result[weekKey] = { ...existingWeek, days: mergedDays };
+  }
+  
+  return result;
+}
+
+/**
+ * Merge grocery items: merge by id if present, otherwise dedupe by lowercase text.
+ */
+function mergeGrocery(existingGrocery, incomingGrocery) {
+  const existingItems = existingGrocery.items || [];
+  const incomingItems = incomingGrocery.items || [];
+  
+  // Build map of existing items by id and by text
+  const byId = new Map();
+  const byText = new Map();
+  
+  for (const item of existingItems) {
+    if (item.id) byId.set(item.id, item);
+    const key = (item.text || "").toLowerCase().trim();
+    if (key) byText.set(key, item);
+  }
+  
+  // Merge incoming items
+  for (const item of incomingItems) {
+    if (item.id && byId.has(item.id)) {
+      // Update existing item by id
+      const existing = byId.get(item.id);
+      byId.set(item.id, pickNewer(existing, item));
+    } else {
+      const key = (item.text || "").toLowerCase().trim();
+      if (key && byText.has(key)) {
+        // Dedupe by text - skip if already exists
+        continue;
+      }
+      // Add new item
+      const newId = item.id || uid();
+      byId.set(newId, { ...item, id: newId });
+      if (key) byText.set(key, item);
+    }
+  }
+  
+  return {
+    ...existingGrocery,
+    items: Array.from(byId.values()),
+  };
+}
+
+/**
+ * Main merge function: merge imported data INTO existing data.
+ */
+function mergeMealsData(existing, imported) {
+  return {
+    ...existing,
+    recipes: mergeById(existing.recipes || [], imported.recipes || []),
+    receipts: mergeById(existing.receipts || [], imported.receipts || []),
+    planner: {
+      ...existing.planner,
+      weeks: mergeWeeks(existing.planner?.weeks || {}, imported.planner?.weeks || {}),
+    },
+    grocery: mergeGrocery(existing.grocery || { items: [] }, imported.grocery || { items: [] }),
+    settings: imported.settings ? { ...existing.settings, ...imported.settings } : existing.settings,
+  };
+}
+
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
   const data = useMemo(() => migrateData(ctx.store.get(defaultFn())), [ctx, defaultFn, rev]);
@@ -356,6 +474,29 @@ export default function MealsModule({ ctx }) {
     });
   };
 
+  const setSlotForDay = (dayName, slotKey, slotEntryOrNull) => {
+    updateStore((prev) => {
+      const d = prev;
+      const wk = d.planner.weeks[weekStart] || { days: {} };
+      const curDay = wk.days[dayName] || {};
+      const nextDay = { ...curDay };
+      if (!slotEntryOrNull) delete nextDay[slotKey];
+      else nextDay[slotKey] = slotEntryOrNull;
+
+      const nextDays = { ...wk.days };
+      if (Object.keys(nextDay).length) nextDays[dayName] = nextDay;
+      else delete nextDays[dayName];
+
+      return {
+        ...d,
+        planner: {
+          ...d.planner,
+          weeks: { ...d.planner.weeks, [weekStart]: { ...wk, days: nextDays } },
+        },
+      };
+    });
+  };
+
   const clearDay = () => {
     updateStore((prev) => {
       const d = prev;
@@ -647,11 +788,11 @@ export default function MealsModule({ ctx }) {
 
   const triggerImport = () => fileRef.current?.click();
 
-  const importReplace = async (file) => {
+  const importAdd = async (file) => {
     try {
       const text = await file.text();
       const imported = parseImportText(text);
-      setStore(imported);
+      updateStore((prev) => mergeMealsData(prev, imported));
     } catch (e) {
       console.error(e);
       alert("Import failed. Please choose a valid Meals export (XML) or a JSON backup.");
@@ -709,7 +850,7 @@ export default function MealsModule({ ctx }) {
           <button className="iconBtn" onClick={doExport} title="Export meals data (XML)">
             <Download size={18} />
           </button>
-          <button className="iconBtn" onClick={triggerImport} title="Import meals data (replaces)">
+          <button className="iconBtn" onClick={triggerImport} title="Import meals data (adds / merges)">
             <Upload size={18} />
           </button>
           <input
@@ -719,7 +860,7 @@ export default function MealsModule({ ctx }) {
             className="hidden"
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) importReplace(f);
+              if (f) importAdd(f);
               e.target.value = "";
             }}
           />
@@ -760,11 +901,16 @@ export default function MealsModule({ ctx }) {
                 <thead>
                   <tr>
                     <th className="text-left p-2 opacity-70"></th>
-                    {DAYS.map((d) => (
-                      <th key={d} className="text-center p-2 opacity-70 font-medium">
-                        {d.slice(0, 3)}
-                      </th>
-                    ))}
+                    {DAYS.map((d, idx) => {
+                      const dayDate = addDays(weekStart, idx);
+                      const dateStr = fmtDayDate(dayDate);
+                      return (
+                        <th key={d} className="text-center p-2 opacity-70 font-medium">
+                          <div>{d.slice(0, 3)}</div>
+                          <div className="text-[10px] opacity-60">{dateStr}</div>
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody>
@@ -827,10 +973,7 @@ export default function MealsModule({ ctx }) {
                   const selectedText = slotData?.type === "text" ? slotData.text : "";
                   
                   const applySlot = (val) => {
-                    const prevActiveDay = activeDay;
-                    setActiveDay(compactSlotEditor.day);
-                    setSlot(compactSlotEditor.slot, val);
-                    setActiveDay(prevActiveDay);
+                    setSlotForDay(compactSlotEditor.day, compactSlotEditor.slot, val);
                   };
 
                   return (
@@ -931,6 +1074,8 @@ export default function MealsModule({ ctx }) {
 
               <div className="space-y-2">
                 {DAYS.map((d) => {
+                  const dayDate = addDays(weekStart, DAYS.indexOf(d));
+                  const dateStr = fmtDayDate(dayDate);
                   const entry = weekDays[d] || {};
                   const parts = SLOTS.map((s) => {
                     const val = entry?.[s.key];
@@ -949,7 +1094,7 @@ export default function MealsModule({ ctx }) {
                         activeDay === d ? "bg-white/15 border-white/20" : "bg-white/5 border-white/10 hover:bg-white/10"
                       }`}
                     >
-                      <div className="text-sm font-medium">{d}</div>
+                      <div className="text-sm font-medium">{d} {dateStr}</div>
                       <div className="text-xs opacity-70 truncate">{subtitle || "—"}</div>
                     </button>
                   );
