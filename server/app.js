@@ -4,6 +4,9 @@ import path from "path";
 import fs, { promises as fsp } from "fs";
 import storage from "./storage/index.js";
 
+// ✅ NEW: Firewalla endpoints (local SSH policy toggle)
+import { pauseRule, resumeRule } from "./firewalla/controller.js";
+
 const app = express();
 
 // ----- Middleware -----
@@ -75,6 +78,10 @@ function makeId() {
 app.get("/api/v1/health", (req, res) => {
   res.json({ ok: true, api: "v1", schema_version: "1" });
 });
+
+// ✅ NEW: Firewalla control (kids on/off via policy 48 by default)
+app.post("/api/v1/firewalla/pause", pauseRule);
+app.post("/api/v1/firewalla/resume", resumeRule);
 
 // ----- Module state -----
 app.get("/api/v1/modules/:module/state", async (req, res) => {
