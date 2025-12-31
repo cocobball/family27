@@ -7,6 +7,7 @@ import storage from "./storage/index.js";
 
 // ✅ NEW: Firewalla endpoints (local SSH policy toggle)
 import { pauseRule, resumeRule } from "./firewalla/controller.js";
+console.log("Firewalla host:", process.env.FIREWALLA_HOST);
 
 const app = express();
 
