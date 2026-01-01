@@ -27,7 +27,8 @@ function sshRun(remoteCmd) {
 }
 
 function nodeToggleCmd(policyId, action /* "enable" | "disable" */) {
-  return `/home/pi/firewalla/bin/node -e "
+return `cd /home/pi/firewalla && /home/pi/firewalla/bin/node -e "
+
 const PM2 = require('/home/pi/firewalla/alarm/PolicyManager2.js');
 (async () => {
   const pm2 = new PM2();
@@ -42,7 +43,8 @@ const PM2 = require('/home/pi/firewalla/alarm/PolicyManager2.js');
 }
 
 function nodeStatusCmd(policyId) {
-  return `/home/pi/firewalla/bin/node -e "
+return `cd /home/pi/firewalla && /home/pi/firewalla/bin/node -e "
+
 const PM2 = require('/home/pi/firewalla/alarm/PolicyManager2.js');
 (async () => {
   const pm2 = new PM2();
