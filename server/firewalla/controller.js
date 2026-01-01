@@ -7,7 +7,11 @@ const FIREWALLA_KEY =
 
 // Your “Kids block” policy pid from Firewalla (you said 48):
 const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
-
+// De-duping for concurrent SSH status calls
+let inFlightStatus = null;
+let lastStatus = null;
+let lastStatusAt = 0;
+const STATUS_CACHE_MS = 2000;
 function sshRun(remoteCmd) {
   console.log("[firewalla] ssh key:", FIREWALLA_KEY);
   return new Promise((resolve, reject) => {
@@ -101,10 +105,35 @@ export async function resumeRule(req, res) {
 export async function kidsStatus(req, res) {
   try {
     const policyId = String(req.query?.policyId || DEFAULT_POLICY_ID);
-    const out = await sshRun(nodeStatusCmd(policyId));
-    const jsonLine = out.stdout.trim().split("\n").pop();
-    const parsed = JSON.parse(jsonLine);
-    res.json(parsed);
+    
+    // Return cached result if fresh enough
+    if (Date.now() - lastStatusAt < STATUS_CACHE_MS && lastStatus) {
+      return res.json(lastStatus);
+    }
+    
+    // If there's already a request in flight, await it
+    if (inFlightStatus) {
+      const result = await inFlightStatus;
+      return res.json(result);
+    }
+    
+    // Start a new request
+    inFlightStatus = (async () => {
+      const out = await sshRun(nodeStatusCmd(policyId));
+      const jsonLine = out.stdout.trim().split("\n").pop();
+      const parsed = JSON.parse(jsonLine);
+      return parsed;
+    })();
+    
+    try {
+      const result = await inFlightStatus;
+      // Cache successful result
+      lastStatus = result;
+      lastStatusAt = Date.now();
+      res.json(result);
+    } finally {
+      inFlightStatus = null;
+    }
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
