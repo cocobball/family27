@@ -30,28 +30,30 @@ function sshRun(remoteCmd) {
 
 function nodeToggleCmd(policyId, action /* "enable" | "disable" */) {
   const js =
-    `const PM2=require("./alarm/PolicyManager2.js");` +
-    `(async()=>{` +
-    `const pm2=new PM2();` +
+    'const PM2=require("./alarm/PolicyManager2.js");' +
+    '(async()=>{' +
+    "const pm2=new PM2();" +
     `const p=await pm2.getPolicy("${policyId}");` +
-    `if(!p){console.log(JSON.stringify({ok:false,error:"no policy"}));process.exit(2);}` +
-    `if("${action}"==="disable") await pm2.disablePolicy(p); else await pm2.enablePolicy(p);` +
+    'if(!p){console.log(JSON.stringify({ok:false,error:"no policy"}));process.exit(2);}' +
+    (action === "disable"
+      ? "await pm2.disablePolicy(p);"
+      : "await pm2.enablePolicy(p);") +
     `const p2=await pm2.getPolicy("${policyId}");` +
-    `console.log(JSON.stringify({ok:true,pid:p2.pid,disabled:p2.disabled,notes:p2.notes||""}));` +
-    `})().catch(e=>{console.log(JSON.stringify({ok:false,error:String(e?.message||e)}));process.exit(1);});`;
+    'console.log(JSON.stringify({ok:true,pid:p2.pid,disabled:p2.disabled,notes:p2.notes||""}));' +
+    "})().catch(e=>{console.log(JSON.stringify({ok:false,error:String(e?.message||e)}));process.exit(1);});";
 
   return `cd /home/pi/firewalla && /home/pi/firewalla/bin/node -e '${js}'`;
 }
 
 function nodeStatusCmd(policyId) {
   const js =
-    `const PM2=require("./alarm/PolicyManager2.js");` +
-    `(async()=>{` +
-    `const pm2=new PM2();` +
+    'const PM2=require("./alarm/PolicyManager2.js");' +
+    '(async()=>{' +
+    "const pm2=new PM2();" +
     `const p=await pm2.getPolicy("${policyId}");` +
-    `if(!p){console.log(JSON.stringify({ok:false,error:"no policy"}));process.exit(2);}` +
-    `console.log(JSON.stringify({ok:true,pid:p.pid,type:p.type,action:p.action,tag:p.tag,target:p.target,direction:p.direction,disabled:p.disabled,notes:p.notes||""}));` +
-    `})().catch(e=>{console.log(JSON.stringify({ok:false,error:String(e?.message||e)}));process.exit(1);});`;
+    'if(!p){console.log(JSON.stringify({ok:false,error:"no policy"}));process.exit(2);}' +
+    'console.log(JSON.stringify({ok:true,pid:p.pid,type:p.type,action:p.action,tag:p.tag,target:p.target,direction:p.direction,disabled:p.disabled,notes:p.notes||""}));' +
+    "})().catch(e=>{console.log(JSON.stringify({ok:false,error:String(e?.message||e)}));process.exit(1);});";
 
   return `cd /home/pi/firewalla && /home/pi/firewalla/bin/node -e '${js}'`;
 }
