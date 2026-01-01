@@ -16,8 +16,6 @@ function sshRun(remoteCmd) {
       "-o",
       "StrictHostKeyChecking=no",
       `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
-      "bash",
-      "-lc",
       remoteCmd,
     ];
 
