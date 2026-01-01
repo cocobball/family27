@@ -9,6 +9,7 @@ const FIREWALLA_KEY =
 const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
 
 function sshRun(remoteCmd) {
+  console.log("[firewalla] ssh key:", FIREWALLA_KEY);
   return new Promise((resolve, reject) => {
 const args = [
   "-i",
@@ -16,13 +17,17 @@ const args = [
   "-o",
   "BatchMode=yes",
   "-o",
+  "ConnectTimeout=8",
+  "-o",
+  "ServerAliveInterval=5",
+  "-o",
+  "ServerAliveCountMax=2",
+  "-o",
   "UserKnownHostsFile=/dev/null",
   "-o",
   "LogLevel=ERROR",
   "-o",
   "StrictHostKeyChecking=no",
-  "-o",
-  "ConnectTimeout=8",
   `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
   remoteCmd,
 ];
