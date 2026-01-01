@@ -111,6 +111,15 @@ app.post("/api/v1/network/kids/on", async (req, res) => {
 app.post("/api/v1/firewalla/pause", pauseRule);
 app.post("/api/v1/firewalla/resume", resumeRule);
 
+// Network kids aliases (UI expects these)
+app.get("/api/v1/network/kids/status", kidsStatus);
+
+// Kids ON = disable block policy
+app.post("/api/v1/network/kids/on", resumeRule);
+
+// Kids OFF = enable block policy
+app.post("/api/v1/network/kids/off", pauseRule);
+
 // ----- Module state -----
 app.get("/api/v1/modules/:module/state", async (req, res) => {
   try {
