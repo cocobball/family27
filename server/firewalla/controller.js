@@ -7,17 +7,27 @@ const FIREWALLA_KEY =
 
 // Your “test block kids” policy pid from Firewalla:
 const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
+console.log("[firewalla] host=", FIREWALLA_HOST, "user=", FIREWALLA_USER, "key=", FIREWALLA_KEY);
 
 function sshRun(remoteCmd) {
   return new Promise((resolve, reject) => {
-    const args = [
-      "-i",
-      FIREWALLA_KEY,
-      "-o",
-      "StrictHostKeyChecking=no",
-      `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
-      remoteCmd,
-    ];
+const args = [
+  "-i",
+  FIREWALLA_KEY,
+  "-o",
+  "IdentitiesOnly=yes",
+  "-o",
+  "PreferredAuthentications=publickey",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "StrictHostKeyChecking=no",
+  `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
+  remoteCmd,
+];
+
+
+
 
     execFile("ssh", args, { timeout: 20000 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr || err.message));

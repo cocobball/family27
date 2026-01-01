@@ -81,6 +81,17 @@ app.get("/api/v1/health", (req, res) => {
   res.json({ ok: true, api: "v1", schema_version: "1" });
 });
 
+// ----- Firewalla (Kids Internet Test) -----
+// OFF = block kids internet (enable the block policy)
+app.post("/api/v1/network/kids/off", async (req, res) => {
+  return resumeRule(req, res);
+});
+
+// ON = allow kids internet (disable the block policy)
+app.post("/api/v1/network/kids/on", async (req, res) => {
+  return pauseRule(req, res);
+});
+
 // ✅ NEW: Firewalla control (kids on/off via policy 48 by default)
 app.post("/api/v1/firewalla/pause", pauseRule);
 app.post("/api/v1/firewalla/resume", resumeRule);
