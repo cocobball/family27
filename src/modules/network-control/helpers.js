@@ -1,12 +1,12 @@
-export function defaultNetworkControlData() {
+export function defaultNetworkData() {
   return {
-    version: 1,
+    version: 2,
 
     // If set, we automatically keep kids internet ON until this time
     // (ISO string or null)
     allowUntil: null,
 
-    // cache of last status fetch
+    // cache of last status fetch (from backend)
     lastStatus: null, // { ok, pid, disabled, ... } or null
     lastStatusAt: null, // ISO string
 

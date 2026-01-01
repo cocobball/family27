@@ -1,13 +1,13 @@
 import { Wifi } from "lucide-react";
 import Module from "./module.jsx";
-import { defaultNetworkControlData } from "./helpers.js";
+import { defaultNetworkData } from "./helpers.js";
 
 export const moduleDef = {
-  id: "network-control",
-  title: "Internet Control",
+  id: "network",
+  title: "Network",
   icon: Wifi,
   Component: Module,
-  defaultData: defaultNetworkControlData,
+  defaultData: defaultNetworkData,
   dependencies: ["rewards"], // parent lock
 };
 

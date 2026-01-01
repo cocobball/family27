@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  defaultNetworkControlData,
+  defaultNetworkData,
   formatRemaining,
   isAllowActive,
   remainingMs,
@@ -40,63 +40,98 @@ function useModuleData(ctx, defaultFn) {
 const ui = {
   card: {
     border: "1px solid rgba(255,255,255,0.12)",
-    background: "rgba(0,0,0,0.12)",
-    borderRadius: 16,
-    padding: 12,
+    background: "rgba(0,0,0,0.28)",
+    borderRadius: 18,
+    padding: 14,
   },
+  subtle: { opacity: 0.78 },
+  row: { display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" },
+
   input: {
     width: "100%",
     padding: 12,
     borderRadius: 12,
     border: "1px solid rgba(255,255,255,0.18)",
-    background: "rgba(255,255,255,0.08)",
-    color: "rgba(255,255,255,0.92)",
+    background: "rgba(0,0,0,0.40)",
+    color: "rgba(255,255,255,0.95)",
     outline: "none",
   },
+
   btn: {
     padding: "12px 14px",
     borderRadius: 14,
-    border: "1px solid rgba(255,255,255,0.14)",
-    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(255,255,255,0.16)",
+    background: "rgba(0,0,0,0.40)",
     color: "rgba(255,255,255,0.92)",
-    fontWeight: 800,
+    fontWeight: 900,
     cursor: "pointer",
   },
   btnPrimary: {
-    padding: "14px 14px",
+    padding: "12px 14px",
     borderRadius: 14,
-    border: "1px solid rgba(255,255,255,0.18)",
-    background: "rgba(255,255,255,0.14)",
-    color: "rgba(255,255,255,0.95)",
-    fontWeight: 900,
+    border: "1px solid rgba(255,255,255,0.22)",
+    background: "rgba(255,255,255,0.16)",
+    color: "rgba(255,255,255,0.98)",
+    fontWeight: 950,
     cursor: "pointer",
   },
   btnDanger: {
-    padding: "14px 14px",
+    padding: "12px 14px",
     borderRadius: 14,
-    border: "1px solid rgba(255,255,255,0.18)",
-    background: "rgba(255,80,80,0.25)",
-    color: "rgba(255,255,255,0.95)",
-    fontWeight: 900,
+    border: "1px solid rgba(255,255,255,0.22)",
+    background: "rgba(255,80,80,0.28)",
+    color: "rgba(255,255,255,0.98)",
+    fontWeight: 950,
     cursor: "pointer",
   },
   btnDisabled: {
     opacity: 0.55,
     cursor: "not-allowed",
   },
+
   pill: {
     padding: "6px 10px",
     borderRadius: 999,
     border: "1px solid rgba(255,255,255,0.15)",
-    background: "rgba(0,0,0,0.18)",
-    fontWeight: 800,
+    background: "rgba(0,0,0,0.30)",
+    fontWeight: 900,
     fontSize: 12,
     letterSpacing: 0.2,
+    color: "rgba(255,255,255,0.92)",
   },
+
+  // Toggle
+  toggleWrap: { display: "flex", alignItems: "center", gap: 10 },
+  toggleTrack: (on, disabled) => ({
+    width: 56,
+    height: 32,
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: disabled
+      ? "rgba(255,255,255,0.08)"
+      : on
+      ? "rgba(120,255,160,0.22)"
+      : "rgba(255,80,80,0.22)",
+    position: "relative",
+    cursor: disabled ? "not-allowed" : "pointer",
+    boxShadow: "inset 0 0 0 1px rgba(0,0,0,0.25)",
+  }),
+  toggleKnob: (on) => ({
+    width: 26,
+    height: 26,
+    borderRadius: 999,
+    background: "rgba(255,255,255,0.92)",
+    position: "absolute",
+    top: 2,
+    left: on ? 28 : 2,
+    transition: "left 160ms ease",
+  }),
+
+  sectionTitle: { fontWeight: 950, marginBottom: 8 },
 };
 
-export default function NetworkControlModule({ ctx }) {
-  const { data, patch } = useModuleData(ctx, defaultNetworkControlData);
+export default function NetworkModule({ ctx }) {
+  const { data, patch } = useModuleData(ctx, defaultNetworkData);
 
   const [busy, setBusy] = useState(false);
 
@@ -203,9 +238,7 @@ export default function NetworkControlModule({ ctx }) {
       addHistory({
         id: uuid(),
         at: new Date().toISOString(),
-        action:
-          metaAction ||
-          (state === "off" ? "KIDS_OFF_BLOCK" : "KIDS_ON_ALLOW"),
+        action: metaAction || (state === "off" ? "KIDS_OFF_BLOCK" : "KIDS_ON_ALLOW"),
         minutes: minutes || 0,
         ok: !!result?.ok,
         error: result?.ok ? "" : (result?.error || "unknown error"),
@@ -254,7 +287,7 @@ export default function NetworkControlModule({ ctx }) {
   const autoBlockRunningRef = useRef(false);
   useEffect(() => {
     const t = setInterval(async () => {
-      const cur = ctx.store.get(defaultNetworkControlData());
+      const cur = ctx.store.get(defaultNetworkData());
       const ms = cur?.allowUntil ? remainingMs(cur.allowUntil) : 0;
 
       if (cur?.allowUntil && ms <= 0 && !autoBlockRunningRef.current) {
@@ -302,15 +335,22 @@ export default function NetworkControlModule({ ctx }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const disabledBtnStyle = busy ? ui.btnDisabled : null;
+  async function onToggle() {
+    if (busy) return;
+    if (kidsInternetOn) {
+      await setKids("off", 0, "TOGGLE_OFF_BLOCK");
+    } else {
+      await setKids("on", 0, "TOGGLE_ON_ALLOW");
+    }
+  }
 
   return (
     <div style={{ padding: 16, display: "grid", gap: 12 }}>
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
         <div>
-          <div style={{ fontSize: 20, fontWeight: 900 }}>Internet Control</div>
-          <div style={{ opacity: 0.75, marginTop: 4 }}>
+          <div style={{ fontSize: 20, fontWeight: 950 }}>Network</div>
+          <div style={{ opacity: 0.8, marginTop: 4 }}>
             Policy ID: <b>{data?.lastStatus?.pid || "?"}</b>
             {" • "}
             Last check:{" "}
@@ -318,18 +358,14 @@ export default function NetworkControlModule({ ctx }) {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div style={ui.row}>
           <div style={ui.pill}>
-            Kids Internet:{" "}
-            {kidsInternetOn ? "ON" : kidsInternetOff ? "OFF" : "UNKNOWN"}
+            Kids Internet: {kidsInternetOn ? "ON" : kidsInternetOff ? "OFF" : "UNKNOWN"}
           </div>
 
           <button
             onClick={() => (parentUnlocked ? doLock() : setShowPw(true))}
-            style={{
-              ...ui.btn,
-              ...(busy ? ui.btnDisabled : null),
-            }}
+            style={{ ...ui.btn, ...(busy ? ui.btnDisabled : null) }}
             disabled={busy}
           >
             {parentUnlocked ? "Lock Parent" : "Unlock Parent"}
@@ -337,80 +373,112 @@ export default function NetworkControlModule({ ctx }) {
         </div>
       </div>
 
-      {/* Timer card */}
-      {allowActive ? (
-        <div style={ui.card}>
-          <div style={{ fontWeight: 900 }}>Timer active</div>
-          <div style={{ opacity: 0.9, marginTop: 4 }}>
-            Kids internet stays <b>ON</b> for: <b>{remain}</b>
+      {/* Main control card */}
+      <div style={ui.card}>
+        <div style={ui.sectionTitle}>On / Off</div>
+
+        <div style={{ ...ui.row, justifyContent: "space-between" }}>
+          <div style={{ display: "grid", gap: 4 }}>
+            <div style={{ fontWeight: 950, fontSize: 16 }}>
+              {kidsInternetOn ? "Internet is ON" : kidsInternetOff ? "Internet is OFF" : "Status unknown"}
+            </div>
+            <div style={ui.subtle}>
+              Toggle controls the Firewalla block policy (disabled=1 means ON).
+            </div>
           </div>
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button
-              disabled={busy}
-              onClick={cancelTimer}
-              style={{ ...ui.btn, ...(busy ? ui.btnDisabled : null) }}
+
+          {/* Toggle switch */}
+          <div style={ui.toggleWrap}>
+            <div
+              role="switch"
+              aria-checked={kidsInternetOn}
+              onClick={onToggle}
+              style={ui.toggleTrack(kidsInternetOn, busy)}
+              title={busy ? "Working..." : "Toggle Kids Internet"}
             >
-              Cancel Timer
-            </button>
+              <div style={ui.toggleKnob(kidsInternetOn)} />
+            </div>
+
             <button
               disabled={busy}
               onClick={() => apiGetStatus().catch(() => {})}
               style={{ ...ui.btn, ...(busy ? ui.btnDisabled : null) }}
             >
-              Refresh Status
+              Refresh
             </button>
           </div>
         </div>
-      ) : (
-        <div style={{ ...ui.card, opacity: 0.9 }}>
-          <div style={{ fontWeight: 900 }}>No timer running</div>
-          <div style={{ opacity: 0.8, marginTop: 4 }}>
-            Use a preset below to allow internet temporarily.
-          </div>
+
+        {/* Timer status */}
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.10)" }}>
+          {allowActive ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontWeight: 950 }}>
+                Timer active: keeping internet <b>ON</b> for <b>{remain}</b>
+              </div>
+              <div style={ui.row}>
+                <button
+                  disabled={busy}
+                  onClick={cancelTimer}
+                  style={{ ...ui.btn, ...(busy ? ui.btnDisabled : null) }}
+                >
+                  Cancel Timer
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() => setKids("off", 0, "BLOCK_NOW_OVERRIDE_TIMER")}
+                  style={{ ...ui.btnDanger, ...(busy ? ui.btnDisabled : null) }}
+                >
+                  Block Now
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={ui.subtle}>
+              No timer running. Use a timed option below to allow temporarily.
+            </div>
+          )}
         </div>
-      )}
-
-      {/* Primary actions */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <button
-          disabled={busy}
-          onClick={() => setKids("on")}
-          style={{ ...ui.btnPrimary, ...(busy ? ui.btnDisabled : null) }}
-        >
-          Kids ON (Allow)
-        </button>
-
-        <button
-          disabled={busy}
-          onClick={() => setKids("off")}
-          style={{ ...ui.btnDanger, ...(busy ? ui.btnDisabled : null) }}
-        >
-          Kids OFF (Block)
-        </button>
       </div>
 
-      {/* Timer presets */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
-        <button disabled={busy} onClick={() => allowFor(15)} style={{ ...ui.btn, ...(disabledBtnStyle || null) }}>
-          15 min
-        </button>
-        <button disabled={busy} onClick={() => allowFor(30)} style={{ ...ui.btn, ...(disabledBtnStyle || null) }}>
-          30 min
-        </button>
-        <button disabled={busy} onClick={() => allowFor(60)} style={{ ...ui.btn, ...(disabledBtnStyle || null) }}>
-          1 hour
-        </button>
-        <button disabled={busy} onClick={() => allowFor(120)} style={{ ...ui.btn, ...(disabledBtnStyle || null) }}>
-          2 hours
-        </button>
+      {/* Timed options */}
+      <div style={ui.card}>
+        <div style={ui.sectionTitle}>Timed Allow</div>
+        <div style={ui.subtle}>
+          Turns internet <b>ON</b> now, then auto-blocks when time is up.
+        </div>
+
+        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+          <button
+            disabled={busy}
+            onClick={() => allowFor(30)}
+            style={{ ...ui.btnPrimary, ...(busy ? ui.btnDisabled : null) }}
+          >
+            ON for 30 min
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => allowFor(60)}
+            style={{ ...ui.btnPrimary, ...(busy ? ui.btnDisabled : null) }}
+          >
+            ON for 60 min
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => allowFor(120)}
+            style={{ ...ui.btnPrimary, ...(busy ? ui.btnDisabled : null) }}
+          >
+            ON for 120 min
+          </button>
+        </div>
       </div>
 
       {/* History */}
-      <div style={{ marginTop: 6 }}>
-        <div style={{ fontWeight: 900, marginBottom: 8 }}>History (last 20)</div>
+      <div style={{ marginTop: 2 }}>
+        <div style={{ fontWeight: 950, marginBottom: 8 }}>History (last 20)</div>
         <div style={{ display: "grid", gap: 6 }}>
           {(data.history || []).length === 0 ? (
-            <div style={{ opacity: 0.7 }}>No actions yet.</div>
+            <div style={{ opacity: 0.75 }}>No actions yet.</div>
           ) : (
             (data.history || []).map((h) => (
               <div
@@ -419,19 +487,20 @@ export default function NetworkControlModule({ ctx }) {
                   padding: 10,
                   borderRadius: 12,
                   border: "1px solid rgba(255,255,255,0.12)",
+                  background: "rgba(0,0,0,0.18)",
                   display: "flex",
                   justifyContent: "space-between",
                   gap: 10,
                 }}
               >
                 <div style={{ display: "grid" }}>
-                  <div style={{ fontWeight: 800 }}>
+                  <div style={{ fontWeight: 900 }}>
                     {h.action} {h.minutes ? `(${h.minutes}m)` : ""}
                   </div>
-                  <div style={{ opacity: 0.7 }}>{new Date(h.at).toLocaleString()}</div>
-                  {h.error ? <div style={{ opacity: 0.9 }}>Error: {h.error}</div> : null}
+                  <div style={{ opacity: 0.75 }}>{new Date(h.at).toLocaleString()}</div>
+                  {h.error ? <div style={{ opacity: 0.95 }}>Error: {h.error}</div> : null}
                 </div>
-                <div style={{ fontWeight: 900 }}>{h.ok ? "✅" : "❌"}</div>
+                <div style={{ fontWeight: 950, fontSize: 18 }}>{h.ok ? "✅" : "❌"}</div>
               </div>
             ))
           )}
@@ -464,8 +533,8 @@ export default function NetworkControlModule({ ctx }) {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ fontSize: 18, fontWeight: 900 }}>Parent Unlock</div>
-            <div style={{ opacity: 0.8 }}>
+            <div style={{ fontSize: 18, fontWeight: 950 }}>Parent Unlock</div>
+            <div style={{ opacity: 0.85 }}>
               Enter parent password to control internet.
             </div>
 
