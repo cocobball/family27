@@ -14,7 +14,9 @@ let statusCache = null;
 let statusCacheAt = 0;
 let statusInflightPromise = null;
 const STATUS_CACHE_MS = 3000;
-fu// Validate SSH key exists before attempting connection
+
+function sshRun(remoteCmd) {
+  // Validate SSH key exists before attempting connection
   if (!existsSync(FIREWALLA_KEY)) {
     const expectedPath = `${process.env.HOME}/.ssh/firewalla_dashboard`;
     throw new Error(
@@ -24,7 +26,6 @@ fu// Validate SSH key exists before attempting connection
     );
   }
 
-  nction sshRun(remoteCmd) {
   console.log("[firewalla] ssh key:", FIREWALLA_KEY);
   return new Promise((resolve, reject) => {
     const args = [
