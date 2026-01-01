@@ -16,6 +16,8 @@ function sshRun(remoteCmd) {
       "-o",
       "StrictHostKeyChecking=no",
       `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
+      "bash",
+      "-lc",
       remoteCmd,
     ];
 
@@ -40,7 +42,8 @@ function nodeToggleCmd(policyId, action /* "enable" | "disable" */) {
     'console.log(JSON.stringify({ok:true,pid:p2.pid,disabled:p2.disabled,notes:p2.notes||""}));' +
     "})().catch(e=>{console.log(JSON.stringify({ok:false,error:String(e?.message||e)}));process.exit(1);});";
 
-  return `cd /home/pi/firewalla && export GIT_DIR=/home/pi/firewalla/.git GIT_WORK_TREE=/home/pi/firewalla && /home/pi/firewalla/bin/node -e '${js}'`;
+  const b64 = Buffer.from(js, "utf8").toString("base64");
+  return `cd /home/pi/firewalla && export GIT_DIR=/home/pi/firewalla/.git GIT_WORK_TREE=/home/pi/firewalla && /home/pi/firewalla/bin/node -e "$(echo ${b64} | base64 -d)"`;
 }
 
 function nodeStatusCmd(policyId) {
@@ -53,7 +56,8 @@ function nodeStatusCmd(policyId) {
     'console.log(JSON.stringify({ok:true,pid:p.pid,type:p.type,action:p.action,tag:p.tag,target:p.target,direction:p.direction,disabled:p.disabled,notes:p.notes||""}));' +
     "})().catch(e=>{console.log(JSON.stringify({ok:false,error:String(e?.message||e)}));process.exit(1);});";
 
-  return `cd /home/pi/firewalla && export GIT_DIR=/home/pi/firewalla/.git GIT_WORK_TREE=/home/pi/firewalla && /home/pi/firewalla/bin/node -e '${js}'`;
+  const b64 = Buffer.from(js, "utf8").toString("base64");
+  return `cd /home/pi/firewalla && export GIT_DIR=/home/pi/firewalla/.git GIT_WORK_TREE=/home/pi/firewalla && /home/pi/firewalla/bin/node -e "$(echo ${b64} | base64 -d)"`;
 }
 
 // NOTE (important):
