@@ -90,10 +90,10 @@ app.post("/api/v1/firewalla/resume", resumeRule);
 app.get("/api/v1/network/kids/status", kidsStatus);
 
 // Kids ON = disable block policy
-app.post("/api/v1/network/kids/on", resumeRule);
+app.post("/api/v1/network/kids/on", pauseRule);
 
 // Kids OFF = enable block policy
-app.post("/api/v1/network/kids/off", pauseRule);
+app.post("/api/v1/network/kids/off", resumeRule);
 
 // ----- Module state -----
 app.get("/api/v1/modules/:module/state", async (req, res) => {
