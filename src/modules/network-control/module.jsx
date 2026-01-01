@@ -135,6 +135,9 @@ export default function NetworkModule({ ctx }) {
 
   const [busy, setBusy] = useState(false);
 
+  // Track in-flight status requests to prevent concurrent calls
+  const statusInFlightRef = useRef(false);
+
   // parent lock
   const [parentUnlocked, setParentUnlocked] = useState(false);
   const [pw, setPw] = useState("");
@@ -160,10 +163,19 @@ export default function NetworkModule({ ctx }) {
 
   // ----- API helpers -----
   async function apiGetStatus() {
-    const r = await fetch("/api/v1/network/kids/status");
-    const j = await r.json();
-    patch({ lastStatus: j, lastStatusAt: new Date().toISOString() });
-    return j;
+    if (statusInFlightRef.current) {
+      return; // Skip if previous request still pending
+    }
+    
+    statusInFlightRef.current = true;
+    try {
+      const r = await fetch("/api/v1/network/kids/status");
+      const j = await r.json();
+      patch({ lastStatus: j, lastStatusAt: new Date().toISOString() });
+      return j;
+    } finally {
+      statusInFlightRef.current = false;
+    }
   }
 
   async function apiKidsOff() {
@@ -327,7 +339,7 @@ export default function NetworkModule({ ctx }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
 
-  // Status poll
+  // Status poll (10 second interval with in-flight deduplication)
   useEffect(() => {
     apiGetStatus().catch(() => {});
     const t = setInterval(() => apiGetStatus().catch(() => {}), 10000);
