@@ -22,8 +22,6 @@ function sshRun(remoteCmd) {
       "-o",
       "BatchMode=yes",
       `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
-      "bash",
-      "-lc",
       remoteCmd,
     ];
 
