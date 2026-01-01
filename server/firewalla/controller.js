@@ -11,7 +11,7 @@ const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
 let inFlightStatus = null;
 let lastStatus = null;
 let lastStatusAt = 0;
-const STATUS_CACHE_MS = 2000;
+const STATUS_CACHE_MS = 1500;
 function sshRun(remoteCmd) {
   console.log("[firewalla] ssh key:", FIREWALLA_KEY);
   return new Promise((resolve, reject) => {
@@ -32,6 +32,12 @@ const args = [
   "LogLevel=ERROR",
   "-o",
   "StrictHostKeyChecking=no",
+  "-o",
+  "ControlMaster=auto",
+  "-o",
+  "ControlPersist=60s",
+  "-o",
+  "ControlPath=/tmp/fd-ssh-%r@%h:%p",
   `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
   remoteCmd,
 ];
@@ -103,21 +109,24 @@ export async function resumeRule(req, res) {
 }
 
 export async function kidsStatus(req, res) {
+  const policyId = String(req.query?.policyId || DEFAULT_POLICY_ID);
+  
   try {
-    const policyId = String(req.query?.policyId || DEFAULT_POLICY_ID);
-    
-    // Return cached result if fresh enough
-    if (Date.now() - lastStatusAt < STATUS_CACHE_MS && lastStatus) {
+    // 1. Return cached result if fresh enough (< 1500ms old)
+    if (lastStatus && Date.now() - lastStatusAt < STATUS_CACHE_MS) {
+      console.log("[firewalla] status: using cache (age:", Date.now() - lastStatusAt, "ms)");
       return res.json(lastStatus);
     }
     
-    // If there's already a request in flight, await it
+    // 2. If a request is already in-flight, await it (mutex behavior)
     if (inFlightStatus) {
+      console.log("[firewalla] status: waiting for in-flight SSH call");
       const result = await inFlightStatus;
       return res.json(result);
     }
     
-    // Start a new request
+    // 3. Start new SSH request and store the promise immediately (prevents race)
+    console.log("[firewalla] status: starting new SSH call (policy:", policyId + ")");
     inFlightStatus = (async () => {
       const out = await sshRun(nodeStatusCmd(policyId));
       const jsonLine = out.stdout.trim().split("\n").pop();
@@ -125,16 +134,22 @@ export async function kidsStatus(req, res) {
       return parsed;
     })();
     
+    // Ensure mutex is always released even if SSH fails
     try {
       const result = await inFlightStatus;
-      // Cache successful result
+      
+      // Cache successful result only
       lastStatus = result;
       lastStatusAt = Date.now();
-      res.json(result);
+      
+      return res.json(result);
     } finally {
+      // Always clear the mutex, even on failure
       inFlightStatus = null;
     }
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e.message || e) });
+    // Ensure mutex is cleared in case of early failures
+    inFlightStatus = null;
+    return res.status(500).json({ ok: false, error: String(e.message || e) });
   }
 }
