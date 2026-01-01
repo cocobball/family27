@@ -1,6 +1,4 @@
-import dotenv from "dotenv";
-dotenv.config({ path: "/opt/family-dashboard/.env" });
-
+import "dotenv/config";
 import storage from "./storage/index.js";
 
 await storage.initStorage();
