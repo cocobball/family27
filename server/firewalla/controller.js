@@ -1,50 +1,75 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 
+const HOME = homedir();
 const FIREWALLA_HOST = process.env.FIREWALLA_HOST || "192.168.122.1";
 const FIREWALLA_USER = process.env.FIREWALLA_USER || "pi";
 const FIREWALLA_KEY =
-  process.env.FIREWALLA_KEY || `${process.env.HOME}/.ssh/firewalla_dashboard`;
+  process.env.FIREWALLA_KEY || `${HOME}/.ssh/firewalla_dashboard`;
 
 // Your “Kids block” policy pid from Firewalla (you said 48):
 const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
-
+// Global SSH mutex - ensures only one SSH command runs at a time
+let sshMutex = Promise.resolve();
 // 3-second cache + single-flight lock for kids status
 let statusCache = null;
 let statusCacheAt = 0;
 let statusInflightPromise = null;
 const STATUS_CACHE_MS = 3000;
 
-function sshRun(remoteCmd) {
+async function sshRun(remoteCmd) {
   // Validate SSH key exists before attempting connection
   if (!existsSync(FIREWALLA_KEY)) {
-    const expectedPath = `${process.env.HOME}/.ssh/firewalla_dashboard`;
     throw new Error(
-      `SSH key not found at: ${FIREWALLA_KEY}\n` +
-      `Expected path: ${expectedPath}\n` +
-      `Please ensure the Firewalla SSH key exists and is readable, or set FIREWALLA_KEY environment variable.`
+      `SSH key not found: ${FIREWALLA_KEY}\n` +
+      `HOME directory: ${HOME}\n` +
+      `Fix via systemd drop-in or .env`
     );
   }
 
-  console.log("[firewalla] ssh key:", FIREWALLA_KEY);
-  return new Promise((resolve, reject) => {
-    const args = [
-      "-n",
-      "-i",
-      FIREWALLA_KEY,
-      "-o",
-      "StrictHostKeyChecking=no",
-      "-o",
-      "ConnectTimeout=15",
-      `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
-      remoteCmd,
-    ];
+  // Acquire global SSH mutex
+  const prevOperation = sshMutex;
+  let releaseMutex;
+  sshMutex = new Promise(resolve => { releaseMutex = resolve; });
 
-    execFile("ssh", args, { timeout: 20000 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr || err.message));
-      resolve({ stdout, stderr });
+  // Wait for previous SSH operation to complete
+  if (prevOperation !== Promise.resolve()) {
+    console.log("[firewalla] ssh: queued");
+  }
+  await prevOperation.catch(() => {}); // ignore previous errors
+
+  try {
+    console.log("[firewalla] ssh key:", FIREWALLA_KEY);
+    return await new Promise((resolve, reject) => {
+      const args = [
+        "-n",
+        "-i",
+        FIREWALLA_KEY,
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "-o",
+        "ControlMaster=no",
+        `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
+        remoteCmd,
+      ];
+
+      execFile("ssh", args, { timeout: 20000 }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve({ stdout, stderr });
+      });
     });
-  });
+  } finally {
+    releaseMutex();
+  }
 }
 
 function nodeToggleCmd(policyId, action /* "enable" | "disable" */) {
@@ -88,7 +113,20 @@ export async function pauseRule(req, res) {
   try {
     const policyId = String(req.body?.policyId || DEFAULT_POLICY_ID);
     const out = await sshRun(nodeToggleCmd(policyId, "disable"));
-    res.json({ ok: true, policyId, result: out.stdout.trim() });
+    
+    // Parse JSON from last non-empty line
+    const jsonLine = out.stdout.trim().split("\n").filter(l => l.trim()).pop();
+    try {
+      const firewalla = JSON.parse(jsonLine);
+      res.json({ ok: true, policyId, firewalla });
+    } catch (parseErr) {
+      res.status(500).json({
+        ok: false,
+        error: "Bad Firewalla output",
+        stdout: out.stdout.trim(),
+        stderr: out.stderr.trim()
+      });
+    }
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
@@ -99,7 +137,20 @@ export async function resumeRule(req, res) {
   try {
     const policyId = String(req.body?.policyId || DEFAULT_POLICY_ID);
     const out = await sshRun(nodeToggleCmd(policyId, "enable"));
-    res.json({ ok: true, policyId, result: out.stdout.trim() });
+    
+    // Parse JSON from last non-empty line
+    const jsonLine = out.stdout.trim().split("\n").filter(l => l.trim()).pop();
+    try {
+      const firewalla = JSON.parse(jsonLine);
+      res.json({ ok: true, policyId, firewalla });
+    } catch (parseErr) {
+      res.status(500).json({
+        ok: false,
+        error: "Bad Firewalla output",
+        stdout: out.stdout.trim(),
+        stderr: out.stderr.trim()
+      });
+    }
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
@@ -110,6 +161,7 @@ export async function kidsStatus(req, res) {
   
   try {
     // 1. Return cached result if fresh enough (< 3000ms old)
+    // Only cache successful responses; errors cached separately with shorter TTL
     if (statusCache && Date.now() - statusCacheAt < STATUS_CACHE_MS) {
       console.log("[firewalla] status: cached");
       return res.json(statusCache);
@@ -135,9 +187,11 @@ export async function kidsStatus(req, res) {
     try {
       const result = await statusInflightPromise;
       
-      // Cache successful result
-      statusCache = result;
-      statusCacheAt = Date.now();
+      // Cache only successful responses (ok:true)
+      if (result && result.ok === true) {
+        statusCache = result;
+        statusCacheAt = Date.now();
+      }
       
       return res.json(result);
     } finally {
@@ -145,10 +199,12 @@ export async function kidsStatus(req, res) {
       statusInflightPromise = null;
     }
   } catch (e) {
-    // Cache error response as well
+    // Don't cache errors (or cache for very short time)
     const errorResponse = { ok: false, error: String(e.message || e) };
+    
+    // Optional: cache errors for 250ms to prevent error storms
     statusCache = errorResponse;
-    statusCacheAt = Date.now();
+    statusCacheAt = Date.now() - (STATUS_CACHE_MS - 250);
     
     // Ensure inflight is cleared
     statusInflightPromise = null;

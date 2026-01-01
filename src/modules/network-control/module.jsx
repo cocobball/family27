@@ -137,6 +137,10 @@ export default function NetworkModule({ ctx }) {
 
   // Track in-flight status requests to prevent concurrent calls
   const statusInFlightRef = useRef(false);
+  
+  // Exponential backoff for polling
+  const pollIntervalRef = useRef(5000); // Start at 5 seconds
+  const pollTimerRef = useRef(null);
 
   // parent lock
   const [parentUnlocked, setParentUnlocked] = useState(false);
@@ -172,7 +176,15 @@ export default function NetworkModule({ ctx }) {
       const r = await fetch("/api/v1/network/kids/status");
       const j = await r.json();
       patch({ lastStatus: j, lastStatusAt: new Date().toISOString() });
+      
+      // Success: reset backoff to 5 seconds
+      pollIntervalRef.current = 5000;
+      
       return j;
+    } catch (err) {
+      // Error: increase backoff exponentially (max 60s)
+      pollIntervalRef.current = Math.min(pollIntervalRef.current * 2, 60000);
+      throw err;
     } finally {
       statusInFlightRef.current = false;
     }
@@ -339,11 +351,29 @@ export default function NetworkModule({ ctx }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
 
-  // Status poll (10 second interval with in-flight deduplication)
+  // Status poll with exponential backoff (5s -> 10s -> 20s -> 40s -> max 60s)
   useEffect(() => {
+    // Initial poll
     apiGetStatus().catch(() => {});
-    const t = setInterval(() => apiGetStatus().catch(() => {}), 10000);
-    return () => clearInterval(t);
+    
+    // Polling loop with dynamic interval
+    function schedulePoll() {
+      pollTimerRef.current = setTimeout(() => {
+        apiGetStatus()
+          .catch(() => {})
+          .finally(() => {
+            schedulePoll(); // Schedule next poll with current interval
+          });
+      }, pollIntervalRef.current);
+    }
+    
+    schedulePoll();
+    
+    return () => {
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

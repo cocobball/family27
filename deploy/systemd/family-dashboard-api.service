@@ -1,0 +1,38 @@
+[Unit]
+Description=Family Dashboard API Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=masri
+Group=masri
+WorkingDirectory=/opt/family-dashboard
+
+# Load environment variables from .env file
+EnvironmentFile=/opt/family-dashboard/.env
+
+# Start the server
+ExecStart=/home/masri/.nvm/versions/node/v24.12.0/bin/node /opt/family-dashboard/server/index.js
+
+# Restart policy: restart on failure but avoid rapid loops
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Resource limits and logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=family-dashboard-api
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Give process time to start/stop
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
