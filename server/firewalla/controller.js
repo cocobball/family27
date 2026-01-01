@@ -29,42 +29,31 @@ function sshRun(remoteCmd) {
 }
 
 function nodeToggleCmd(policyId, action /* "enable" | "disable" */) {
-return `cd /home/pi/firewalla && /home/pi/firewalla/bin/node -e "
+  const js =
+    `const PM2=require("./alarm/PolicyManager2.js");` +
+    `(async()=>{` +
+    `const pm2=new PM2();` +
+    `const p=await pm2.getPolicy("${policyId}");` +
+    `if(!p){console.log(JSON.stringify({ok:false,error:"no policy"}));process.exit(2);}` +
+    `if("${action}"==="disable") await pm2.disablePolicy(p); else await pm2.enablePolicy(p);` +
+    `const p2=await pm2.getPolicy("${policyId}");` +
+    `console.log(JSON.stringify({ok:true,pid:p2.pid,disabled:p2.disabled,notes:p2.notes||""}));` +
+    `})().catch(e=>{console.log(JSON.stringify({ok:false,error:String(e?.message||e)}));process.exit(1);});`;
 
-const PM2 = require('/home/pi/firewalla/alarm/PolicyManager2.js');
-(async () => {
-  const pm2 = new PM2();
-  const p = await pm2.getPolicy('${policyId}');
-  if (!p) { console.log('no policy'); process.exit(2); }
-  if ('${action}' === 'disable') await pm2.disablePolicy(p);
-  else await pm2.enablePolicy(p);
-  const p2 = await pm2.getPolicy('${policyId}');
-  console.log(JSON.stringify({ pid: p2.pid, disabled: p2.disabled, notes: p2.notes || '' }));
-})();
-"`;
+  return `cd /home/pi/firewalla && /home/pi/firewalla/bin/node -e '${js}'`;
 }
 
 function nodeStatusCmd(policyId) {
-return `cd /home/pi/firewalla && /home/pi/firewalla/bin/node -e "
+  const js =
+    `const PM2=require("./alarm/PolicyManager2.js");` +
+    `(async()=>{` +
+    `const pm2=new PM2();` +
+    `const p=await pm2.getPolicy("${policyId}");` +
+    `if(!p){console.log(JSON.stringify({ok:false,error:"no policy"}));process.exit(2);}` +
+    `console.log(JSON.stringify({ok:true,pid:p.pid,type:p.type,action:p.action,tag:p.tag,target:p.target,direction:p.direction,disabled:p.disabled,notes:p.notes||""}));` +
+    `})().catch(e=>{console.log(JSON.stringify({ok:false,error:String(e?.message||e)}));process.exit(1);});`;
 
-const PM2 = require('/home/pi/firewalla/alarm/PolicyManager2.js');
-(async () => {
-  const pm2 = new PM2();
-  const p = await pm2.getPolicy('${policyId}');
-  if (!p) { console.log(JSON.stringify({ ok:false, error:'no policy' })); process.exit(2); }
-  console.log(JSON.stringify({
-    ok: true,
-    pid: p.pid,
-    type: p.type,
-    action: p.action,
-    tag: p.tag,
-    target: p.target,
-    direction: p.direction,
-    disabled: p.disabled,
-    notes: p.notes || ''
-  }));
-})();
-"`;
+  return `cd /home/pi/firewalla && /home/pi/firewalla/bin/node -e '${js}'`;
 }
 
 // NOTE (important):
