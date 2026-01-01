@@ -11,37 +11,30 @@ const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
 let inFlightStatus = null;
 let lastStatus = null;
 let lastStatusAt = 0;
-const STATUS_CACHE_MS = 1500;
+const STATUS_CACHE_MS = 3000;
 function sshRun(remoteCmd) {
   console.log("[firewalla] ssh key:", FIREWALLA_KEY);
   return new Promise((resolve, reject) => {
-const args = [
-  "-i",
-  FIREWALLA_KEY,
-  "-o",
-  "BatchMode=yes",
-  "-o",
-  "ConnectTimeout=8",
-  "-o",
-  "ServerAliveInterval=5",
-  "-o",
-  "ServerAliveCountMax=2",
-  "-o",
-  "UserKnownHostsFile=/dev/null",
-  "-o",
-  "LogLevel=ERROR",
-  "-o",
-  "StrictHostKeyChecking=no",
-  "-o",
-  "ControlMaster=auto",
-  "-o",
-  "ControlPersist=60s",
-  "-o",
-  "ControlPath=/tmp/fd-ssh-%r@%h:%p",
-  `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
-  remoteCmd,
-];
-
+    const args = [
+      "-i",
+      FIREWALLA_KEY,
+      "-o",
+      "StrictHostKeyChecking=no",
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "PreferredAuthentications=publickey",
+      "-o",
+      "PasswordAuthentication=no",
+      "-o",
+      "KbdInteractiveAuthentication=no",
+      "-o",
+      "NumberOfPasswordPrompts=0",
+      "-o",
+      "ConnectTimeout=15",
+      `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
+      remoteCmd,
+    ];
 
     execFile("ssh", args, { timeout: 20000 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr || err.message));
@@ -112,21 +105,21 @@ export async function kidsStatus(req, res) {
   const policyId = String(req.query?.policyId || DEFAULT_POLICY_ID);
   
   try {
-    // 1. Return cached result if fresh enough (< 1500ms old)
+    // 1. Return cached result if fresh enough (< 3000ms old)
     if (lastStatus && Date.now() - lastStatusAt < STATUS_CACHE_MS) {
-      console.log("[firewalla] status: using cache (age:", Date.now() - lastStatusAt, "ms)");
+      console.log("[firewalla] status: cached");
       return res.json(lastStatus);
     }
     
     // 2. If a request is already in-flight, await it (mutex behavior)
     if (inFlightStatus) {
-      console.log("[firewalla] status: waiting for in-flight SSH call");
+      console.log("[firewalla] status: awaiting inflight");
       const result = await inFlightStatus;
       return res.json(result);
     }
     
     // 3. Start new SSH request and store the promise immediately (prevents race)
-    console.log("[firewalla] status: starting new SSH call (policy:", policyId + ")");
+    console.log("[firewalla] status: ssh start");
     inFlightStatus = (async () => {
       const out = await sshRun(nodeStatusCmd(policyId));
       const jsonLine = out.stdout.trim().split("\n").pop();
@@ -138,7 +131,7 @@ export async function kidsStatus(req, res) {
     try {
       const result = await inFlightStatus;
       
-      // Cache successful result only
+      // Cache successful result
       lastStatus = result;
       lastStatusAt = Date.now();
       
@@ -148,8 +141,13 @@ export async function kidsStatus(req, res) {
       inFlightStatus = null;
     }
   } catch (e) {
-    // Ensure mutex is cleared in case of early failures
+    // Cache error response as well
+    const errorResponse = { ok: false, error: String(e.message || e) };
+    lastStatus = errorResponse;
+    lastStatusAt = Date.now();
+    
+    // Ensure mutex is cleared
     inFlightStatus = null;
-    return res.status(500).json({ ok: false, error: String(e.message || e) });
+    return res.status(500).json(errorResponse);
   }
 }
