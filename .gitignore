@@ -1,0 +1,4 @@
+
+# ignore local deps + secrets
+node_modules/
+.env
