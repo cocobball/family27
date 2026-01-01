@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const FIREWALLA_HOST = process.env.FIREWALLA_HOST || "192.168.122.1";
 const FIREWALLA_USER = process.env.FIREWALLA_USER || "pi";
@@ -13,7 +14,17 @@ let statusCache = null;
 let statusCacheAt = 0;
 let statusInflightPromise = null;
 const STATUS_CACHE_MS = 3000;
-function sshRun(remoteCmd) {
+fu// Validate SSH key exists before attempting connection
+  if (!existsSync(FIREWALLA_KEY)) {
+    const expectedPath = `${process.env.HOME}/.ssh/firewalla_dashboard`;
+    throw new Error(
+      `SSH key not found at: ${FIREWALLA_KEY}\n` +
+      `Expected path: ${expectedPath}\n` +
+      `Please ensure the Firewalla SSH key exists and is readable, or set FIREWALLA_KEY environment variable.`
+    );
+  }
+
+  nction sshRun(remoteCmd) {
   console.log("[firewalla] ssh key:", FIREWALLA_KEY);
   return new Promise((resolve, reject) => {
     const args = [
