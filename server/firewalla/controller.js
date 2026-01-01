@@ -49,8 +49,8 @@ function nodeToggleCmd(policyId, action /* "enable" | "disable" */) {
     'console.log(JSON.stringify({ok:true,pid:p2.pid,disabled:p2.disabled,notes:p2.notes||""}));' +
     "})().catch(e=>{console.log(JSON.stringify({ok:false,error:String((e && e.message) ? e.message : e)}));process.exit(1);});";
 
-  const b64 = Buffer.from(js, "utf8").toString("base64");
-  return `cd /home/pi/firewalla && export GIT_DIR=/home/pi/firewalla/.git GIT_WORK_TREE=/home/pi/firewalla && /home/pi/firewalla/bin/node -e "$(echo ${b64} | base64 -d)"`;
+  const escaped = js.replace(/'/g, "'\\''" );
+  return `cd /home/pi/firewalla && export GIT_DIR=/home/pi/firewalla/.git GIT_WORK_TREE=/home/pi/firewalla && /home/pi/firewalla/bin/node -e '${escaped}'`;
 }
 
 function nodeStatusCmd(policyId) {
@@ -63,8 +63,8 @@ function nodeStatusCmd(policyId) {
     'console.log(JSON.stringify({ok:true,pid:p.pid,type:p.type,action:p.action,tag:p.tag,target:p.target,direction:p.direction,disabled:p.disabled,notes:p.notes||""}));' +
     "})().catch(e=>{console.log(JSON.stringify({ok:false,error:String((e && e.message) ? e.message : e)}));process.exit(1);});";
 
-  const b64 = Buffer.from(js, "utf8").toString("base64");
-  return `cd /home/pi/firewalla && export GIT_DIR=/home/pi/firewalla/.git GIT_WORK_TREE=/home/pi/firewalla && /home/pi/firewalla/bin/node -e "$(echo ${b64} | base64 -d)"`;
+  const escaped = js.replace(/'/g, "'\\''" );
+  return `cd /home/pi/firewalla && export GIT_DIR=/home/pi/firewalla/.git GIT_WORK_TREE=/home/pi/firewalla && /home/pi/firewalla/bin/node -e '${escaped}'`;
 }
 
 // NOTE (important):
