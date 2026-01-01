@@ -4,6 +4,7 @@ import multer from "multer";
 import path from "path";
 import fs, { promises as fsp } from "fs";
 import storage from "./storage/index.js";
+import { pauseRule, resumeRule, kidsStatus } from "./firewalla/controller.js";
 
 // ✅ NEW: Firewalla endpoints (local SSH policy toggle)
 import { pauseRule, resumeRule } from "./firewalla/controller.js";
@@ -79,6 +80,21 @@ function makeId() {
 // ----- Health -----
 app.get("/api/v1/health", (req, res) => {
   res.json({ ok: true, api: "v1", schema_version: "1" });
+});
+// ----- Firewalla (Kids Internet) -----
+// OFF = block kids internet (enable the block policy)
+app.post("/api/v1/network/kids/off", async (req, res) => {
+  return resumeRule(req, res);
+});
+
+// ON = allow kids internet (disable the block policy)
+app.post("/api/v1/network/kids/on", async (req, res) => {
+  return pauseRule(req, res);
+});
+
+// Status = read policy.disabled
+app.get("/api/v1/network/kids/status", async (req, res) => {
+  return kidsStatus(req, res);
 });
 
 // ----- Firewalla (Kids Internet Test) -----

@@ -5,29 +5,19 @@ const FIREWALLA_USER = process.env.FIREWALLA_USER || "pi";
 const FIREWALLA_KEY =
   process.env.FIREWALLA_KEY || `${process.env.HOME}/.ssh/firewalla_dashboard`;
 
-// Your “test block kids” policy pid from Firewalla:
+// Your “Kids block” policy pid from Firewalla (you said 48):
 const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
-console.log("[firewalla] host=", FIREWALLA_HOST, "user=", FIREWALLA_USER, "key=", FIREWALLA_KEY);
 
 function sshRun(remoteCmd) {
   return new Promise((resolve, reject) => {
-const args = [
-  "-i",
-  FIREWALLA_KEY,
-  "-o",
-  "IdentitiesOnly=yes",
-  "-o",
-  "PreferredAuthentications=publickey",
-  "-o",
-  "BatchMode=yes",
-  "-o",
-  "StrictHostKeyChecking=no",
-  `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
-  remoteCmd,
-];
-
-
-
+    const args = [
+      "-i",
+      FIREWALLA_KEY,
+      "-o",
+      "StrictHostKeyChecking=no",
+      `${FIREWALLA_USER}@${FIREWALLA_HOST}`,
+      remoteCmd,
+    ];
 
     execFile("ssh", args, { timeout: 20000 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr || err.message));
@@ -45,16 +35,40 @@ const PM2 = require('/home/pi/firewalla/alarm/PolicyManager2.js');
   if (!p) { console.log('no policy'); process.exit(2); }
   if ('${action}' === 'disable') await pm2.disablePolicy(p);
   else await pm2.enablePolicy(p);
-  console.log('${action}d', '${policyId}');
+  const p2 = await pm2.getPolicy('${policyId}');
+  console.log(JSON.stringify({ pid: p2.pid, disabled: p2.disabled, notes: p2.notes || '' }));
 })();
 "`;
 }
 
-// Keep the same names so your existing routes keep working.
-// NOTE: we interpret “pause” as ALLOW kids (disable block policy),
-// and “resume” as BLOCK kids (enable block policy).
+function nodeStatusCmd(policyId) {
+  return `/home/pi/firewalla/bin/node -e "
+const PM2 = require('/home/pi/firewalla/alarm/PolicyManager2.js');
+(async () => {
+  const pm2 = new PM2();
+  const p = await pm2.getPolicy('${policyId}');
+  if (!p) { console.log(JSON.stringify({ ok:false, error:'no policy' })); process.exit(2); }
+  console.log(JSON.stringify({
+    ok: true,
+    pid: p.pid,
+    type: p.type,
+    action: p.action,
+    tag: p.tag,
+    target: p.target,
+    direction: p.direction,
+    disabled: p.disabled,
+    notes: p.notes || ''
+  }));
+})();
+"`;
+}
+
+// NOTE (important):
+// - policy.disabled = "0" means policy ENABLED => BLOCK active => Kids internet OFF
+// - policy.disabled = "1" means policy DISABLED => BLOCK inactive => Kids internet ON
 
 export async function pauseRule(req, res) {
+  // "pause" here means ALLOW kids => disable the blocking policy
   try {
     const policyId = String(req.body?.policyId || DEFAULT_POLICY_ID);
     const out = await sshRun(nodeToggleCmd(policyId, "disable"));
@@ -65,10 +79,23 @@ export async function pauseRule(req, res) {
 }
 
 export async function resumeRule(req, res) {
+  // "resume" here means BLOCK kids => enable the blocking policy
   try {
     const policyId = String(req.body?.policyId || DEFAULT_POLICY_ID);
     const out = await sshRun(nodeToggleCmd(policyId, "enable"));
     res.json({ ok: true, policyId, result: out.stdout.trim() });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
+}
+
+export async function kidsStatus(req, res) {
+  try {
+    const policyId = String(req.query?.policyId || DEFAULT_POLICY_ID);
+    const out = await sshRun(nodeStatusCmd(policyId));
+    const jsonLine = out.stdout.trim().split("\n").pop();
+    const parsed = JSON.parse(jsonLine);
+    res.json(parsed);
   } catch (e) {
     res.status(500).json({ ok: false, error: String(e.message || e) });
   }
