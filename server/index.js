@@ -1,4 +1,9 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: "/opt/family-dashboard/.env" });
+
+console.log("cwd=", process.cwd());
+console.log("FIREWALLA_KEY=", process.env.FIREWALLA_KEY);
+
 import storage from "./storage/index.js";
 
 await storage.initStorage();
