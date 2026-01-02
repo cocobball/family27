@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { mspGetRule, mspPauseRule, mspResumeRule } from "./msp.js";
 
 const HOME = homedir();
 const FIREWALLA_HOST = process.env.FIREWALLA_HOST || "192.168.122.1";
@@ -10,6 +11,9 @@ const FIREWALLA_KEY =
 
 // Your “Kids block” policy pid from Firewalla (you said 48):
 const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
+// Provider configuration
+const FIREWALLA_PROVIDER = (process.env.FIREWALLA_PROVIDER || "ssh").toLowerCase();
+const MSP_RULE_ID = process.env.FIREWALLA_MSP_RULE_ID || "";
 // Global SSH mutex - ensures only one SSH command runs at a time
 let sshMutex = Promise.resolve();
 // 3-second cache + single-flight lock for kids status
@@ -112,6 +116,15 @@ export async function pauseRule(req, res) {
   // "pause" here means ALLOW kids => disable the blocking policy
   try {
     const policyId = String(req.body?.policyId || DEFAULT_POLICY_ID);
+    
+    // Use MSP or SSH provider
+    if (FIREWALLA_PROVIDER === "msp") {
+      const ruleId = MSP_RULE_ID || policyId;
+      const firewalla = await mspPauseRule(ruleId);
+      return res.json({ ok: true, policyId: ruleId, firewalla });
+    }
+    
+    // SSH provider (default)
     const out = await sshRun(nodeToggleCmd(policyId, "disable"));
     
     // Parse JSON from last non-empty line
@@ -136,6 +149,15 @@ export async function resumeRule(req, res) {
   // "resume" here means BLOCK kids => enable the blocking policy
   try {
     const policyId = String(req.body?.policyId || DEFAULT_POLICY_ID);
+    
+    // Use MSP or SSH provider
+    if (FIREWALLA_PROVIDER === "msp") {
+      const ruleId = MSP_RULE_ID || policyId;
+      const firewalla = await mspResumeRule(ruleId);
+      return res.json({ ok: true, policyId: ruleId, firewalla });
+    }
+    
+    // SSH provider (default)
     const out = await sshRun(nodeToggleCmd(policyId, "enable"));
     
     // Parse JSON from last non-empty line
@@ -174,16 +196,22 @@ export async function kidsStatus(req, res) {
       return res.json(result);
     }
     
-    // 3. Start new SSH request and store the promise immediately (prevents race)
-    console.log("[firewalla] status: ssh start");
-    statusInflightPromise = (async () => {
-      const out = await sshRun(nodeStatusCmd(policyId));
-      const jsonLine = out.stdout.trim().split("\n").pop();
-      const parsed = JSON.parse(jsonLine);
-      return parsed;
-    })();
+    // 3. Start new request (MSP or SSH) and store the promise
+    if (FIREWALLA_PROVIDER === "msp") {
+      console.log("[firewalla] status: msp start");
+      const ruleId = MSP_RULE_ID || policyId;
+      statusInflightPromise = mspGetRule(ruleId);
+    } else {
+      console.log("[firewalla] status: ssh start");
+      statusInflightPromise = (async () => {
+        const out = await sshRun(nodeStatusCmd(policyId));
+        const jsonLine = out.stdout.trim().split("\n").pop();
+        const parsed = JSON.parse(jsonLine);
+        return parsed;
+      })();
+    }
     
-    // Ensure inflight is always cleared even if SSH fails
+    // Ensure inflight is always cleared even if request fails
     try {
       const result = await statusInflightPromise;
       
