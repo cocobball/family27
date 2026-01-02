@@ -34,18 +34,21 @@ console.log(`[env] Overrode ${overrideCount} FIREWALLA_* vars from ${envPath}`);
 
 // Determine provider at runtime
 const provider = String(process.env.FIREWALLA_PROVIDER || "ssh").trim().toLowerCase();
+console.log(`[env] Provider mode: "${provider}"`);
 
 // Validate FIREWALLA_KEY (only fatal for SSH provider)
 const currentUser = userInfo().username;
 const firewallKey = process.env.FIREWALLA_KEY;
 
 if (provider === "msp") {
+  console.log("[env] MSP mode detected - skipping SSH key validation");
   // MSP mode: warn about SSH key issues but don't fail
   if (firewallKey && firewallKey.startsWith("/home/pi/")) {
     console.warn(`WARNING: FIREWALLA_KEY is set to ${firewallKey} but provider is 'msp'`);
     console.warn("MSP provider does not use SSH keys. This setting will be ignored.");
   }
 } else {
+  console.log("[env] SSH mode detected - validating SSH key");
   // SSH mode: FIREWALLA_KEY is required
   if (!firewallKey) {
     console.error(`ERROR: FIREWALLA_KEY is not set in ${envPath}`);
