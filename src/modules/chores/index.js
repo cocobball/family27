@@ -1,3 +1,4 @@
+// src/modules/chores/index.js
 import { ClipboardList } from "lucide-react";
 import ChoresModule from "./module.jsx";
 import { defaultChoresData } from "./helpers.js";

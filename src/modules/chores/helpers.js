@@ -1,6 +1,5 @@
 // src/modules/chores/helpers.js
-
-export const CHORES_SCHEMA_VERSION = 3;
+export const CHORES_SCHEMA_VERSION = 4;
 
 export const PEOPLE_DEFAULTS = ["Cory", "Anna", "Brady", "Harvey"];
 export const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -11,27 +10,29 @@ export function defaultChoresData() {
 
     // core
     people: PEOPLE_DEFAULTS,
-    chores: [], // { id, day, person, name, reward?: { minutes:number, points:number }, createdAt }
+    chores: [], // { id, day, person, name, createdAt }
 
-    // completion (weekly)
+    // completion (weekly map; used for day/week UI)
     doneByWeek: {}, // { [weekKey]: { [choreId]: true } }
 
-    // reward bookkeeping (weekly; used for idempotent award + reversible debit)
-    rewardGrantsByWeek: {}, // { [weekKey]: { [choreId]: { minutes?:true, points?:true, grantedAt:number } } }
-    weeklyBonusGrantsByWeek: {}, // { [weekKey]: { [person]: { minutes:number, points:number, grantedAt:number } } }
-
-    // one-off helper tasks (not weekly recurring chores)
-    helperTasks: [], // { id, title, assignedTo: ["harvey","brady"], reward:{minutes,points}, expiresAt?:number|null, status:"active"|"expired"|"completed", createdAt:number, completedAt?:number|null, completedBy?:string[] }
+    // helper tasks (one-off)
+    helperTasks: [], // { id, title, assignedTo:["harvey","brady"], reward:{minutes,points}, expiresAt?, status, createdAt, completedAt?, completedBy? }
     helperGrants: {}, // { [helperId]: { [kidId]: { minutes?:true, points?:true, grantedAt:number } } }
 
+    // daily “turn in” bookkeeping
+    dailyTurnIns: {}, // { [ymd]: { [kidId]: true, grantedAt:number } }
+
+    // cross-module command gating (persisted)
+    kidsInternetLastSent: null, // "allow" | "block" | null
+
     // UI
-    viewMode: "day", // "day" | "week"
+    viewMode: "day",
 
     // settings
     settings: {
-      weeklyBonusByPerson: {
-        Harvey: { minutes: 0, points: 0 },
-        Brady: { minutes: 0, points: 0 },
+      gametime: {
+        enabled: false,
+        minutesPerDay: 60,
       },
     },
   };
@@ -45,40 +46,40 @@ export function normalizeChoresData(raw) {
   const chores = Array.isArray(s.chores) ? s.chores : [];
   const doneByWeek = s.doneByWeek && typeof s.doneByWeek === "object" ? s.doneByWeek : {};
 
-  const rewardGrantsByWeek =
-    s.rewardGrantsByWeek && typeof s.rewardGrantsByWeek === "object" ? s.rewardGrantsByWeek : {};
-  const weeklyBonusGrantsByWeek =
-    s.weeklyBonusGrantsByWeek && typeof s.weeklyBonusGrantsByWeek === "object"
-      ? s.weeklyBonusGrantsByWeek
-      : {};
-
   const helperTasks = Array.isArray(s.helperTasks) ? s.helperTasks : [];
   const helperGrants = s.helperGrants && typeof s.helperGrants === "object" ? s.helperGrants : {};
 
+  const dailyTurnIns = s.dailyTurnIns && typeof s.dailyTurnIns === "object" ? s.dailyTurnIns : {};
+
   const settings = s.settings && typeof s.settings === "object" ? s.settings : {};
-  const weeklyBonusByPerson =
-    settings.weeklyBonusByPerson && typeof settings.weeklyBonusByPerson === "object"
-      ? settings.weeklyBonusByPerson
-      : {};
+  const gametime = settings.gametime && typeof settings.gametime === "object" ? settings.gametime : {};
 
   const mergedPeople = Array.from(new Set([...PEOPLE_DEFAULTS, ...people])).filter(Boolean);
 
   return {
     ...base,
     ...s,
+
+    version: CHORES_SCHEMA_VERSION,
     people: mergedPeople,
+
     chores: chores.map((c) => normalizeChore(c)).filter(Boolean),
     doneByWeek,
-    rewardGrantsByWeek,
-    weeklyBonusGrantsByWeek,
+
     helperTasks: helperTasks.map((t) => normalizeHelperTask(t)).filter(Boolean),
     helperGrants,
+
+    dailyTurnIns,
+    kidsInternetLastSent: s.kidsInternetLastSent === "allow" || s.kidsInternetLastSent === "block" ? s.kidsInternetLastSent : null,
+
     settings: {
       ...base.settings,
       ...settings,
-      weeklyBonusByPerson: {
-        ...base.settings.weeklyBonusByPerson,
-        ...weeklyBonusByPerson,
+      gametime: {
+        ...base.settings.gametime,
+        ...gametime,
+        enabled: !!gametime.enabled,
+        minutesPerDay: Math.max(0, Math.floor(Number(gametime.minutesPerDay ?? base.settings.gametime.minutesPerDay) || 0)),
       },
     },
   };
@@ -86,17 +87,14 @@ export function normalizeChoresData(raw) {
 
 function normalizeChore(c) {
   if (!c || typeof c !== "object") return null;
-  const reward = c.reward && typeof c.reward === "object" ? c.reward : {};
-  const minutes = Number(reward.minutes || 0) || 0;
-  const points = Number(reward.points || 0) || 0;
 
+  // tolerate legacy reward fields but ignore them
   return {
     id: String(c.id || ""),
     day: String(c.day || "Monday"),
     person: String(c.person || PEOPLE_DEFAULTS[0]),
     name: String(c.name || ""),
     createdAt: Number(c.createdAt || 0) || 0,
-    reward: { minutes, points },
   };
 }
 
@@ -109,9 +107,7 @@ function normalizeHelperTask(t) {
 
   const assignedTo = Array.isArray(t.assignedTo) ? t.assignedTo.map(String) : [];
   const status = t.status === "completed" || t.status === "expired" ? t.status : "active";
-
   const expiresAt = t.expiresAt === null || t.expiresAt === undefined ? null : Number(t.expiresAt) || null;
-
   const completedBy = Array.isArray(t.completedBy) ? t.completedBy.map(String) : [];
 
   return {
