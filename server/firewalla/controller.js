@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { mspGetRule, mspPauseRule, mspResumeRule } from "./msp.js";
+import { mspGetRule, mspPauseRule, mspResumeRule, getKidsStatusCached } from "./msp.js";
 import { getCachedStatus, invalidateCache, updateCache, isInBackoff, enterBackoff } from "./statusCache.js";
 
 const HOME = homedir();
@@ -259,8 +259,8 @@ export async function kidsStatus(req, res) {
   console.log("[kidsStatus] provider=", getProvider());
   
   try {
-    // Use the new caching layer with TTL, in-flight deduplication, and 429 backoff
-    const result = await getCachedStatus(async () => {
+    // Use the new caching layer with TTL 30s, in-flight deduplication, and 429 backoff
+    const result = await getKidsStatusCached(async () => {
       if (getProvider() === "msp") {
         const ruleId = getMspRuleId() || policyId;
         const mspResult = await mspGetRule(ruleId);
@@ -275,7 +275,7 @@ export async function kidsStatus(req, res) {
       }
     });
     
-    // Return 200 even if from cache/backoff - UI can check 'cached' and 'backoff' flags
+    // Always return 200 with result (even if cached/backoff - UI can check 'warning' field)
     return res.json(result);
     
   } catch (e) {
