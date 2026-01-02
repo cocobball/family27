@@ -4,7 +4,7 @@ import { defaultNetworkData } from "./helpers.js";
 
 export const moduleDef = {
   id: "network",
-  title: "Network",
+  title: "Game Time",
   icon: Wifi,
   Component: Module,
   defaultData: defaultNetworkData,
