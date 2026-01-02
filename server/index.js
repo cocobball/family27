@@ -25,33 +25,44 @@ if (result.parsed) {
   }
 }
 
-// Validate FIREWALLA_KEY
+// Determine provider at runtime
+const provider = String(process.env.FIREWALLA_PROVIDER || "ssh").trim().toLowerCase();
+
+// Validate FIREWALLA_KEY (only fatal for SSH provider)
 const currentUser = userInfo().username;
 const firewallKey = process.env.FIREWALLA_KEY;
 
-if (!firewallKey) {
-  console.error(`ERROR: FIREWALLA_KEY is not set in ${envPath}`);
-  console.error("Please ensure FIREWALLA_KEY is defined in the .env file.");
-  process.exit(1);
-}
+if (provider === "msp") {
+  // MSP mode: warn about SSH key issues but don't fail
+  if (firewallKey && firewallKey.startsWith("/home/pi/")) {
+    console.warn(`WARNING: FIREWALLA_KEY is set to ${firewallKey} but provider is 'msp'`);
+    console.warn("MSP provider does not use SSH keys. This setting will be ignored.");
+  }
+} else {
+  // SSH mode: FIREWALLA_KEY is required
+  if (!firewallKey) {
+    console.error(`ERROR: FIREWALLA_KEY is not set in ${envPath}`);
+    console.error("Please ensure FIREWALLA_KEY is defined in the .env file.");
+    process.exit(1);
+  }
 
-// If running as masri but key points to /home/pi, that's wrong
-if (currentUser === "masri" && firewallKey === "/home/pi/.ssh/firewalla_dashboard") {
-  console.error(`ERROR: FIREWALLA_KEY is set to ${firewallKey} but you are running as user '${currentUser}'`);
-  console.error(`Expected: /home/${currentUser}/.ssh/firewalla_dashboard`);
-  console.error(`Please update ${envPath} with the correct FIREWALLA_KEY path.`);
-  process.exit(1);
-}
+  // If running as masri but key points to /home/pi, that's wrong
+  if (currentUser === "masri" && firewallKey === "/home/pi/.ssh/firewalla_dashboard") {
+    console.error(`ERROR: FIREWALLA_KEY is set to ${firewallKey} but you are running as user '${currentUser}'`);
+    console.error(`Expected: /home/${currentUser}/.ssh/firewalla_dashboard`);
+    console.error(`Please update ${envPath} with the correct FIREWALLA_KEY path.`);
+    process.exit(1);
+  }
 
-// Verify the key file exists
-if (!existsSync(firewallKey)) {
-  console.error(`ERROR: FIREWALLA_KEY file does not exist: ${firewallKey}`);
-  console.error(`Please ensure the SSH key file exists and is readable.`);
-  process.exit(1);
+  // Verify the key file exists
+  if (!existsSync(firewallKey)) {
+    console.error(`ERROR: FIREWALLA_KEY file does not exist: ${firewallKey}`);
+    console.error(`Please ensure the SSH key file exists and is readable.`);
+    process.exit(1);
+  }
 }
 
 // Validate MSP provider configuration if using MSP
-const provider = String(process.env.FIREWALLA_PROVIDER || "ssh").trim().toLowerCase();
 if (provider === "msp") {
   const mspDomain = process.env.FIREWALLA_MSP_DOMAIN;
   const mspToken = process.env.FIREWALLA_MSP_TOKEN;
