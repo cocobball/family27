@@ -17,7 +17,6 @@ import {
   isHelperExpired,
 } from "./helpers.js";
 
-import { getRewardsData, unlockParent, isParentUnlocked, defaultRewardsData } from "../rewards/helpers.js";
 import { setKidsInternet } from "../../api/kidsInternet.js";
 
 // -----------------------------
@@ -167,35 +166,35 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [localUnlocked, setLocalUnlocked] = useState(false);
-  const [tick, setTick] = useState(0);
-  const s = ctx?.store;
 
-  useEffect(() => {
-    if (!s || typeof s.subscribe !== "function") return;
-    const unsub = s.subscribe(() => setTick((x) => x + 1));
-    return () => unsub?.();
-  }, [s]);
+  if (localUnlocked) return children;
 
-  const rewardsData =
-    s?.getModuleData ? s.getModuleData("rewards", defaultRewardsData()) : defaultRewardsData();
+  const handleUnlock = async () => {
+    const bus = ctx?.eventBus || ctx?.bus;
+    if (!bus?.emit) {
+      setErr("Unlock not available.");
+      return;
+    }
 
-  const unlocked = localUnlocked || isParentUnlocked(rewardsData);
-  if (unlocked) return children;
-
-  const handleUnlock = () => {
-    ctx.eventBus.emit("REWARDS/UNLOCK_PARENT", {
-      password: pin,
-      minutes: 5,
-      reply: (ok) => {
-        if (!ok) {
-          setErr("Incorrect password.");
-          return;
-        }
-        setErr("");
-        setLocalUnlocked(true);
-        setTick((x) => x + 1);
-      },
+    const ok = await new Promise((resolve) => {
+      try {
+        bus.emit("REWARDS/UNLOCK_PARENT", {
+          password: pin,
+          minutes: 5,
+          reply: (v) => resolve(!!v),
+        });
+      } catch {
+        resolve(false);
+      }
     });
+
+    if (!ok) {
+      setErr("Incorrect password.");
+      return;
+    }
+
+    setErr("");
+    setLocalUnlocked(true);
   };
 
   return (
