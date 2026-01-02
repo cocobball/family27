@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { mspGetRule, mspPauseRule, mspResumeRule } from "./msp.js";
+import { getCachedStatus, invalidateCache, updateCache, isInBackoff, enterBackoff } from "./statusCache.js";
 
 const HOME = homedir();
 const FIREWALLA_HOST = process.env.FIREWALLA_HOST || "192.168.122.1";
@@ -23,11 +24,6 @@ function getMspRuleId() {
 
 // Global SSH mutex - ensures only one SSH command runs at a time
 let sshMutex = Promise.resolve();
-// 3-second cache + single-flight lock for kids status
-let statusCache = null;
-let statusCacheAt = 0;
-let statusInflightPromise = null;
-const STATUS_CACHE_MS = 3000;
 
 async function sshRun(remoteCmd) {
   // Validate SSH key exists before attempting connection
@@ -127,8 +123,40 @@ export async function pauseRule(req, res) {
     // Use MSP or SSH provider
     if (getProvider() === "msp") {
       const ruleId = getMspRuleId() || policyId;
-      const firewalla = await mspPauseRule(ruleId);
-      return res.json({ ok: true, provider: "msp", policyId: ruleId, firewalla });
+      
+      try {
+        const firewalla = await mspPauseRule(ruleId);
+        
+        // Update cache with new status after successful mutation
+        updateCache({ ok: true, provider: "msp", ...firewalla });
+        
+        return res.json({ ok: true, provider: "msp", policyId: ruleId, firewalla });
+      } catch (err) {
+        // Check for 429 rate limiting
+        const is429 = err.message && (
+          err.message.includes("429") || 
+          err.message.toLowerCase().includes("rate limit") ||
+          err.message.toLowerCase().includes("too many requests")
+        );
+        
+        if (is429) {
+          // Extract Retry-After if available
+          const retryAfterMatch = err.message.match(/retry[- ]after[:\s]+(\d+)/i);
+          const retryAfterSeconds = retryAfterMatch ? parseInt(retryAfterMatch[1]) : null;
+          
+          enterBackoff(retryAfterSeconds);
+          
+          return res.status(429).json({ 
+            ok: false, 
+            error: "Rate limited by Firewalla MSP. Please try again later.",
+            retryAfter: retryAfterSeconds,
+            backoff: true
+          });
+        }
+        
+        // Re-throw non-429 errors
+        throw err;
+      }
     }
     
     // SSH provider (default)
@@ -138,6 +166,10 @@ export async function pauseRule(req, res) {
     const jsonLine = out.stdout.trim().split("\n").filter(l => l.trim()).pop();
     try {
       const firewalla = JSON.parse(jsonLine);
+      
+      // Update cache with new status after successful mutation
+      updateCache({ ok: true, provider: "ssh", ...firewalla });
+      
       res.json({ ok: true, provider: "ssh", policyId, firewalla });
     } catch (parseErr) {
       res.status(500).json({
@@ -160,8 +192,40 @@ export async function resumeRule(req, res) {
     // Use MSP or SSH provider
     if (getProvider() === "msp") {
       const ruleId = getMspRuleId() || policyId;
-      const firewalla = await mspResumeRule(ruleId);
-      return res.json({ ok: true, provider: "msp", policyId: ruleId, firewalla });
+      
+      try {
+        const firewalla = await mspResumeRule(ruleId);
+        
+        // Update cache with new status after successful mutation
+        updateCache({ ok: true, provider: "msp", ...firewalla });
+        
+        return res.json({ ok: true, provider: "msp", policyId: ruleId, firewalla });
+      } catch (err) {
+        // Check for 429 rate limiting
+        const is429 = err.message && (
+          err.message.includes("429") || 
+          err.message.toLowerCase().includes("rate limit") ||
+          err.message.toLowerCase().includes("too many requests")
+        );
+        
+        if (is429) {
+          // Extract Retry-After if available
+          const retryAfterMatch = err.message.match(/retry[- ]after[:\s]+(\d+)/i);
+          const retryAfterSeconds = retryAfterMatch ? parseInt(retryAfterMatch[1]) : null;
+          
+          enterBackoff(retryAfterSeconds);
+          
+          return res.status(429).json({ 
+            ok: false, 
+            error: "Rate limited by Firewalla MSP. Please try again later.",
+            retryAfter: retryAfterSeconds,
+            backoff: true
+          });
+        }
+        
+        // Re-throw non-429 errors
+        throw err;
+      }
     }
     
     // SSH provider (default)
@@ -171,6 +235,10 @@ export async function resumeRule(req, res) {
     const jsonLine = out.stdout.trim().split("\n").filter(l => l.trim()).pop();
     try {
       const firewalla = JSON.parse(jsonLine);
+      
+      // Update cache with new status after successful mutation
+      updateCache({ ok: true, provider: "ssh", ...firewalla });
+      
       res.json({ ok: true, provider: "ssh", policyId, firewalla });
     } catch (parseErr) {
       res.status(500).json({
@@ -191,66 +259,30 @@ export async function kidsStatus(req, res) {
   console.log("[kidsStatus] provider=", getProvider());
   
   try {
-    // 1. Return cached result if fresh enough (< 3000ms old)
-    // Only cache successful responses; errors cached separately with shorter TTL
-    if (statusCache && Date.now() - statusCacheAt < STATUS_CACHE_MS) {
-      console.log("[firewalla] status: cached");
-      return res.json(statusCache);
-    }
-    
-    // 2. If a request is already in-flight, await it (single-flight lock)
-    if (statusInflightPromise) {
-      console.log("[firewalla] status: awaiting inflight");
-      const result = await statusInflightPromise;
-      return res.json(result);
-    }
-    
-    // 3. Start new request (MSP or SSH) and store the promise
-    if (getProvider() === "msp") {
-      console.log("[firewalla] status: msp start");
-      const ruleId = getMspRuleId() || policyId;
-      
-      // Wrap in async IIFE to ensure normalized output
-      statusInflightPromise = (async () => {
-        const result = await mspGetRule(ruleId);
-        // mspGetRule already returns normalized format: { ok, pid, disabled, notes, msp }
-        return { ...result, provider: "msp" };
-      })();
-    } else {
-      console.log("[firewalla] status: ssh start");
-      statusInflightPromise = (async () => {
+    // Use the new caching layer with TTL, in-flight deduplication, and 429 backoff
+    const result = await getCachedStatus(async () => {
+      if (getProvider() === "msp") {
+        const ruleId = getMspRuleId() || policyId;
+        const mspResult = await mspGetRule(ruleId);
+        // mspGetRule returns normalized format: { ok, pid, disabled, notes, msp }
+        return { ...mspResult, provider: "msp" };
+      } else {
+        // SSH provider
         const out = await sshRun(nodeStatusCmd(policyId));
         const jsonLine = out.stdout.trim().split("\n").pop();
         const parsed = JSON.parse(jsonLine);
         return { ...parsed, provider: "ssh" };
-      })();
-    }
-    
-    // Ensure inflight is always cleared even if request fails
-    try {
-      const result = await statusInflightPromise;
-      
-      // Cache only successful responses (ok:true)
-      if (result && result.ok === true) {
-        statusCache = result;
-        statusCacheAt = Date.now();
       }
-      
-      return res.json(result);
-    } finally {
-      // Always clear the inflight promise, even on failure
-      statusInflightPromise = null;
-    }
+    });
+    
+    // Return 200 even if from cache/backoff - UI can check 'cached' and 'backoff' flags
+    return res.json(result);
+    
   } catch (e) {
-    // Don't cache errors (or cache for very short time)
-    const errorResponse = { ok: false, error: String(e.message || e) };
-    
-    // Optional: cache errors for 250ms to prevent error storms
-    statusCache = errorResponse;
-    statusCacheAt = Date.now() - (STATUS_CACHE_MS - 250);
-    
-    // Ensure inflight is cleared
-    statusInflightPromise = null;
-    return res.status(500).json(errorResponse);
+    // Only reach here if fetch fails AND no cache available
+    return res.status(500).json({ 
+      ok: false, 
+      error: String(e.message || e) 
+    });
   }
 }
