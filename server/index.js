@@ -8,7 +8,16 @@ const result = dotenv.config({ path: envPath });
 
 // Selectively override FIREWALLA_* vars from .env (they take precedence over systemd)
 if (result.parsed) {
-  const firewallKeys = ["FIREWALLA_HOST", "FIREWALLA_USER", "FIREWALLA_KEY", "FIREWALLA_KIDS_POLICY_ID"];
+  const firewallKeys = [
+    "FIREWALLA_HOST",
+    "FIREWALLA_USER",
+    "FIREWALLA_KEY",
+    "FIREWALLA_KIDS_POLICY_ID",
+    "FIREWALLA_PROVIDER",
+    "FIREWALLA_MSP_DOMAIN",
+    "FIREWALLA_MSP_TOKEN",
+    "FIREWALLA_MSP_RULE_ID",
+  ];
   for (const key of firewallKeys) {
     if (result.parsed[key] !== undefined) {
       process.env[key] = result.parsed[key];
@@ -41,10 +50,44 @@ if (!existsSync(firewallKey)) {
   process.exit(1);
 }
 
+// Validate MSP provider configuration if using MSP
+const provider = String(process.env.FIREWALLA_PROVIDER || "ssh").trim().toLowerCase();
+if (provider === "msp") {
+  const mspDomain = process.env.FIREWALLA_MSP_DOMAIN;
+  const mspToken = process.env.FIREWALLA_MSP_TOKEN;
+  const mspRuleId = process.env.FIREWALLA_MSP_RULE_ID;
+
+  if (!mspDomain) {
+    console.error("ERROR: FIREWALLA_PROVIDER is 'msp' but FIREWALLA_MSP_DOMAIN is not set");
+    console.error(`Please set FIREWALLA_MSP_DOMAIN in ${envPath} or via systemd override`);
+    process.exit(1);
+  }
+
+  if (!mspToken) {
+    console.error("ERROR: FIREWALLA_PROVIDER is 'msp' but FIREWALLA_MSP_TOKEN is not set");
+    console.error(`Please set FIREWALLA_MSP_TOKEN in ${envPath} or via systemd override`);
+    process.exit(1);
+  }
+
+  if (!mspRuleId) {
+    console.error("ERROR: FIREWALLA_PROVIDER is 'msp' but FIREWALLA_MSP_RULE_ID is not set");
+    console.error(`Please set FIREWALLA_MSP_RULE_ID in ${envPath} or via systemd override`);
+    process.exit(1);
+  }
+}
+
 console.log("cwd=", process.cwd());
+console.log("FIREWALLA_PROVIDER=", provider);
 console.log("FIREWALLA_HOST=", process.env.FIREWALLA_HOST);
 console.log("FIREWALLA_USER=", process.env.FIREWALLA_USER);
 console.log("FIREWALLA_KEY=", process.env.FIREWALLA_KEY);
+
+// Log MSP config (safe values only, never token)
+if (provider === "msp") {
+  console.log("FIREWALLA_MSP_DOMAIN=", process.env.FIREWALLA_MSP_DOMAIN);
+  console.log("FIREWALLA_MSP_RULE_ID=", process.env.FIREWALLA_MSP_RULE_ID);
+  console.log("FIREWALLA_MSP_TOKEN=", "[REDACTED]");
+}
 
 import storage from "./storage/index.js";
 

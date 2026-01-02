@@ -11,9 +11,16 @@ const FIREWALLA_KEY =
 
 // Your “Kids block” policy pid from Firewalla (you said 48):
 const DEFAULT_POLICY_ID = process.env.FIREWALLA_KIDS_POLICY_ID || "48";
-// Provider configuration
-const FIREWALLA_PROVIDER = (process.env.FIREWALLA_PROVIDER || "ssh").toLowerCase();
-const MSP_RULE_ID = process.env.FIREWALLA_MSP_RULE_ID || "";
+
+// Provider helpers - evaluated at request-time to avoid import-time capture issues
+function getProvider() {
+  return String(process.env.FIREWALLA_PROVIDER || "ssh").trim().toLowerCase();
+}
+
+function getMspRuleId() {
+  return String(process.env.FIREWALLA_MSP_RULE_ID || "").trim();
+}
+
 // Global SSH mutex - ensures only one SSH command runs at a time
 let sshMutex = Promise.resolve();
 // 3-second cache + single-flight lock for kids status
@@ -118,10 +125,10 @@ export async function pauseRule(req, res) {
     const policyId = String(req.body?.policyId || DEFAULT_POLICY_ID);
     
     // Use MSP or SSH provider
-    if (FIREWALLA_PROVIDER === "msp") {
-      const ruleId = MSP_RULE_ID || policyId;
+    if (getProvider() === "msp") {
+      const ruleId = getMspRuleId() || policyId;
       const firewalla = await mspPauseRule(ruleId);
-      return res.json({ ok: true, policyId: ruleId, firewalla });
+      return res.json({ ok: true, provider: "msp", policyId: ruleId, firewalla });
     }
     
     // SSH provider (default)
@@ -131,7 +138,7 @@ export async function pauseRule(req, res) {
     const jsonLine = out.stdout.trim().split("\n").filter(l => l.trim()).pop();
     try {
       const firewalla = JSON.parse(jsonLine);
-      res.json({ ok: true, policyId, firewalla });
+      res.json({ ok: true, provider: "ssh", policyId, firewalla });
     } catch (parseErr) {
       res.status(500).json({
         ok: false,
@@ -151,10 +158,10 @@ export async function resumeRule(req, res) {
     const policyId = String(req.body?.policyId || DEFAULT_POLICY_ID);
     
     // Use MSP or SSH provider
-    if (FIREWALLA_PROVIDER === "msp") {
-      const ruleId = MSP_RULE_ID || policyId;
+    if (getProvider() === "msp") {
+      const ruleId = getMspRuleId() || policyId;
       const firewalla = await mspResumeRule(ruleId);
-      return res.json({ ok: true, policyId: ruleId, firewalla });
+      return res.json({ ok: true, provider: "msp", policyId: ruleId, firewalla });
     }
     
     // SSH provider (default)
@@ -164,7 +171,7 @@ export async function resumeRule(req, res) {
     const jsonLine = out.stdout.trim().split("\n").filter(l => l.trim()).pop();
     try {
       const firewalla = JSON.parse(jsonLine);
-      res.json({ ok: true, policyId, firewalla });
+      res.json({ ok: true, provider: "ssh", policyId, firewalla });
     } catch (parseErr) {
       res.status(500).json({
         ok: false,
@@ -180,6 +187,8 @@ export async function resumeRule(req, res) {
 
 export async function kidsStatus(req, res) {
   const policyId = String(req.query?.policyId || DEFAULT_POLICY_ID);
+  
+  console.log("[kidsStatus] provider=", getProvider());
   
   try {
     // 1. Return cached result if fresh enough (< 3000ms old)
@@ -197,17 +206,23 @@ export async function kidsStatus(req, res) {
     }
     
     // 3. Start new request (MSP or SSH) and store the promise
-    if (FIREWALLA_PROVIDER === "msp") {
+    if (getProvider() === "msp") {
       console.log("[firewalla] status: msp start");
-      const ruleId = MSP_RULE_ID || policyId;
-      statusInflightPromise = mspGetRule(ruleId);
+      const ruleId = getMspRuleId() || policyId;
+      
+      // Wrap in async IIFE to ensure normalized output
+      statusInflightPromise = (async () => {
+        const result = await mspGetRule(ruleId);
+        // mspGetRule already returns normalized format: { ok, pid, disabled, notes, msp }
+        return { ...result, provider: "msp" };
+      })();
     } else {
       console.log("[firewalla] status: ssh start");
       statusInflightPromise = (async () => {
         const out = await sshRun(nodeStatusCmd(policyId));
         const jsonLine = out.stdout.trim().split("\n").pop();
         const parsed = JSON.parse(jsonLine);
-        return parsed;
+        return { ...parsed, provider: "ssh" };
       })();
     }
     
