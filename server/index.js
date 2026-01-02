@@ -2,28 +2,35 @@ import dotenv from "dotenv";
 import { existsSync } from "node:fs";
 import { userInfo } from "node:os";
 
-// Load .env file but don't globally override
+// Load .env file and force-override FIREWALLA_* vars
 const envPath = "/opt/family-dashboard/.env";
 const result = dotenv.config({ path: envPath });
+const envFromFile = result.parsed || {};
 
-// Selectively override FIREWALLA_* vars from .env (they take precedence over systemd)
-if (result.parsed) {
-  const firewallKeys = [
-    "FIREWALLA_HOST",
-    "FIREWALLA_USER",
-    "FIREWALLA_KEY",
-    "FIREWALLA_KIDS_POLICY_ID",
-    "FIREWALLA_PROVIDER",
-    "FIREWALLA_MSP_DOMAIN",
-    "FIREWALLA_MSP_TOKEN",
-    "FIREWALLA_MSP_RULE_ID",
-  ];
-  for (const key of firewallKeys) {
-    if (result.parsed[key] !== undefined) {
-      process.env[key] = result.parsed[key];
+// Force-override FIREWALLA_* vars from .env (they take precedence over systemd)
+const firewallKeys = [
+  "FIREWALLA_PROVIDER",
+  "FIREWALLA_MSP_DOMAIN",
+  "FIREWALLA_MSP_RULE_ID",
+  "FIREWALLA_MSP_TOKEN",
+  "FIREWALLA_KEY",
+  "FIREWALLA_HOST",
+  "FIREWALLA_USER",
+  "FIREWALLA_KIDS_POLICY_ID",
+];
+
+let overrideCount = 0;
+for (const key of firewallKeys) {
+  if (envFromFile[key] !== undefined) {
+    const before = process.env[key];
+    process.env[key] = envFromFile[key];
+    if (before !== envFromFile[key]) {
+      console.log(`[env] ${key}: systemd="${before}" → .env="${envFromFile[key]}"`);
+      overrideCount++;
     }
   }
 }
+console.log(`[env] Overrode ${overrideCount} FIREWALLA_* vars from ${envPath}`);
 
 // Determine provider at runtime
 const provider = String(process.env.FIREWALLA_PROVIDER || "ssh").trim().toLowerCase();

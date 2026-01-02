@@ -4,7 +4,7 @@ import { defaultEventsData } from "./helpers.js";
 
 export const moduleDef = {
   id: "events",
-  title: "Events",
+  title: "Family Events",
   icon: ListChecks,
   Component: EventsModule,
   defaultData: defaultEventsData,
