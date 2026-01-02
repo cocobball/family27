@@ -138,8 +138,8 @@ export default function NetworkModule({ ctx }) {
   // Track in-flight status requests to prevent concurrent calls
   const statusInFlightRef = useRef(false);
   
-  // Exponential backoff for polling
-  const pollIntervalRef = useRef(5000); // Start at 5 seconds
+  // Polling interval - 20 minutes to reduce MSP load
+  const KIDS_STATUS_POLL_MS = 20 * 60 * 1000; // 20 minutes
   const pollTimerRef = useRef(null);
 
   // parent lock
@@ -177,13 +177,8 @@ export default function NetworkModule({ ctx }) {
       const j = await r.json();
       patch({ lastStatus: j, lastStatusAt: new Date().toISOString() });
       
-      // Success: reset backoff to 5 seconds
-      pollIntervalRef.current = 5000;
-      
       return j;
     } catch (err) {
-      // Error: increase backoff exponentially (max 60s)
-      pollIntervalRef.current = Math.min(pollIntervalRef.current * 2, 60000);
       throw err;
     } finally {
       statusInFlightRef.current = false;
@@ -351,20 +346,20 @@ export default function NetworkModule({ ctx }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx]);
 
-  // Status poll with exponential backoff (5s -> 10s -> 20s -> 40s -> max 60s)
+  // Status poll every 20 minutes to reduce MSP load
   useEffect(() => {
     // Initial poll
     apiGetStatus().catch(() => {});
     
-    // Polling loop with dynamic interval
+    // Polling loop with fixed 20-minute interval
     function schedulePoll() {
       pollTimerRef.current = setTimeout(() => {
         apiGetStatus()
           .catch(() => {})
           .finally(() => {
-            schedulePoll(); // Schedule next poll with current interval
+            schedulePoll(); // Schedule next poll
           });
-      }, pollIntervalRef.current);
+      }, KIDS_STATUS_POLL_MS);
     }
     
     schedulePoll();
