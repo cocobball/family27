@@ -1,6 +1,6 @@
 import { Gift } from "lucide-react";
 import RewardsModule from "./module.jsx";
-import { defaultRewardsData, creditRewards, debitRewards } from "./helpers.js";
+import { defaultRewardsData, creditRewards, debitRewards, unlockParent } from "./helpers.js";
 
 function attachRewardsListeners(ctx) {
   // Idempotent guard (prevents double-attaching during HMR/dev)
@@ -18,6 +18,14 @@ function attachRewardsListeners(ctx) {
     const res = debitRewards(ctx, payload);
     if (!res.ok) {
       console.warn("[REWARDS] debit failed:", res.error, payload);
+    }
+  });
+
+  ctx.eventBus.on("REWARDS/UNLOCK_PARENT", (payload) => {
+    const { password, minutes } = payload;
+    const ok = unlockParent(ctx, password, minutes);
+    if (payload.reply) {
+      payload.reply(ok);
     }
   });
 }

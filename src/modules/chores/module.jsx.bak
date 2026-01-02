@@ -83,28 +83,14 @@ function useModuleData(ctx, defaultFn) {
   }, [s]);
 
   const patch = useCallback((partialOrFullNext) => {
-    // If it has a version field, it's a full replace
-    if (partialOrFullNext && typeof partialOrFullNext === "object" && partialOrFullNext.version) {
-      if (s?.setModuleData) s.setModuleData("chores", partialOrFullNext);
-      else if (s?.set) s.set(partialOrFullNext);
-
-      setRev((r) => r + 1);
-      return partialOrFullNext;
-    }
-
-    // Otherwise, if patchModuleData exists, use it
-    if (s?.patchModuleData) {
-      const next = s.patchModuleData("chores", partialOrFullNext);
-      setRev((r) => r + 1);
-      return next;
-    }
-
-    // Fall back to read/merge/set
     let cur;
     if (s?.getModuleData) cur = s.getModuleData("chores", defaultFn());
     else cur = s?.get?.(defaultFn()) ?? defaultFn();
 
-    const next = { ...(cur || {}), ...(partialOrFullNext || {}) };
+    const next =
+      partialOrFullNext && typeof partialOrFullNext === "object" && partialOrFullNext.version
+        ? partialOrFullNext
+        : { ...(cur || {}), ...(partialOrFullNext || {}) };
 
     if (s?.setModuleData) s.setModuleData("chores", next);
     else if (s?.set) s.set(next);
@@ -167,35 +153,58 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [localUnlocked, setLocalUnlocked] = useState(false);
-  const [tick, setTick] = useState(0);
+  const [rev, setRev] = useState(0);
+
   const s = ctx?.store;
 
-  useEffect(() => {
-    if (!s || typeof s.subscribe !== "function") return;
-    const unsub = s.subscribe(() => setTick((x) => x + 1));
-    return () => unsub?.();
-  }, [s]);
+  const rewardsData = useMemo(() => {
+    if (s?.getModuleData) return s.getModuleData("rewards", defaultRewardsData());
+    return getRewardsData(ctx);
+  }, [ctx, s, rev]);
 
-  const rewardsData =
-    s?.getModuleData ? s.getModuleData("rewards", defaultRewardsData()) : defaultRewardsData();
+  useEffect(() => {
+    const s = ctx?.store;
+    if (!s || typeof s.subscribe !== "function") return;
+    const unsub = s.subscribe(() => setRev((r) => r + 1));
+    return () => unsub?.();
+  }, [ctx]);
+
+  useEffect(() => {
+    if (!localUnlocked) return;
+    const timer = setTimeout(() => {
+      if (isParentUnlocked(rewardsData)) return;
+      setLocalUnlocked(false);
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [localUnlocked, rewardsData]);
 
   const unlocked = localUnlocked || isParentUnlocked(rewardsData);
   if (unlocked) return children;
 
   const handleUnlock = () => {
-    ctx.eventBus.emit("REWARDS/UNLOCK_PARENT", {
-      password: pin,
-      minutes: 5,
-      reply: (ok) => {
-        if (!ok) {
-          setErr("Incorrect password.");
-          return;
-        }
-        setErr("");
-        setLocalUnlocked(true);
-        setTick((x) => x + 1);
+    const rewardsCtx = {
+      ...ctx,
+      store: {
+        ...ctx.store,
+        get: () =>
+          ctx.store?.getModuleData
+            ? ctx.store.getModuleData("rewards", defaultRewardsData())
+            : getRewardsData(ctx),
+        set: (next) => {
+          if (ctx.store?.setModuleData) return ctx.store.setModuleData("rewards", next);
+          return ctx.store?.set?.(next);
+        },
       },
-    });
+    };
+
+    const ok = ctx.store?.setModuleData ? unlockParent(rewardsCtx, pin, 5) : unlockParent(ctx, pin, 5);
+    if (!ok) {
+      setErr("Incorrect password.");
+      return;
+    }
+    setErr("");
+    setLocalUnlocked(true);
+    setRev((r) => r + 1);
   };
 
   return (
@@ -1465,20 +1474,14 @@ function SettingsOverlay({ ctx, open, onClose, data, patch }) {
                       checked={!!g.enabled}
                       onChange={(e) => {
                         const enabled = e.target.checked;
-                        const minutesPerDay = Math.max(
-                          0,
-                          Math.floor(Number(normalized.settings?.gametime?.minutesPerDay ?? 60) || 0)
-                        );
-
-                        console.log("[CHORES SETTINGS] patch gametime", { enabled, minutesPerDay });
-
                         patch({
+                          ...normalized,
                           settings: {
                             ...(normalized.settings || {}),
                             gametime: {
                               ...(normalized.settings?.gametime || {}),
                               enabled,
-                              minutesPerDay,
+                              minutesPerDay: Math.max(0, Math.floor(Number(g.minutesPerDay || 0))),
                             },
                           },
                         });
@@ -1494,15 +1497,13 @@ function SettingsOverlay({ ctx, open, onClose, data, patch }) {
                       value={Math.max(0, Math.floor(Number(g.minutesPerDay || 0)))}
                       onChange={(e) => {
                         const v = Math.max(0, Math.floor(Number(e.target.value || 0) || 0));
-
-                        console.log("[CHORES SETTINGS] patch gametime", { v });
-
                         patch({
+                          ...normalized,
                           settings: {
                             ...(normalized.settings || {}),
                             gametime: {
                               ...(normalized.settings?.gametime || {}),
-                              enabled: !!normalized.settings?.gametime?.enabled,
+                              enabled: !!g.enabled,
                               minutesPerDay: v,
                             },
                           },

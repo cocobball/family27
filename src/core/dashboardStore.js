@@ -85,12 +85,35 @@ export function getModuleData(moduleId, defaultValue) {
 }
 
 export function setModuleData(moduleId, value) {
+  // Debug guard for chores module
+  if (moduleId === "chores") {
+    console.warn("[STORE] setModuleData(chores) attempt:", value);
+    console.trace("[STORE] setModuleData(chores) stack");
+    
+    if (!value || typeof value !== "object" || !("version" in value)) {
+      console.warn("[STORE] setModuleData(chores) BLOCKED: invalid value (not an object or missing version)");
+      return;
+    }
+  }
+  
   const db = loadDb();
   db.modules[moduleId] = value;
   saveDb(db);
 }
 
 export function patchModuleData(moduleId, partial) {
+  // Debug guard for chores module
+  if (moduleId === "chores") {
+    console.warn("[STORE] patchModuleData(chores) attempt:", partial);
+    console.trace("[STORE] patchModuleData(chores) stack");
+    
+    if (!partial || typeof partial !== "object") {
+      console.warn("[STORE] patchModuleData(chores) BLOCKED: partial is not an object");
+      const db = loadDb();
+      return db.modules[moduleId] ?? { version: 1 };
+    }
+  }
+  
   const db = loadDb();
   const current = db.modules[moduleId] ?? { version: 1 };
   db.modules[moduleId] = { ...current, ...partial };
