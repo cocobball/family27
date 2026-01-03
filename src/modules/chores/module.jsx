@@ -226,10 +226,17 @@ function toEndOfDayTs(dateStr /* YYYY-MM-DD */) {
   return dt.getTime();
 }
 
+function msToClock(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
 // -----------------------------
 // Parent gate (uses Rewards unlock)
 // -----------------------------
-function ParentGate({ ctx, title = "Parent", children, onCancel }) {
+function ParentGate({ ctx, title = "Parent", children, onCancel, onUnlocked }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [localUnlocked, setLocalUnlocked] = useState(false);
@@ -250,7 +257,6 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
   }, [ctx]);
 
   // Keep localUnlocked for the session; do not auto-lock when data updates.
-
   const unlocked = localUnlocked || isParentUnlocked(rewardsData);
   if (unlocked) return children;
 
@@ -263,6 +269,9 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
     setErr("");
     setLocalUnlocked(true);
     setRev((r) => r + 1);
+    try {
+      onUnlocked?.();
+    } catch {}
   };
 
   return (
@@ -456,16 +465,17 @@ function getGameTimeSession(data, ymd, kidId) {
 
 function setGameTimeSession(data, ymd, kidId, patchSession) {
   const perDay = { ...(data.gameTimeByDay?.[ymd] || {}) };
-  const cur = perDay[kidId] || { totalMinutes: 0, startedAt: null, endsAt: null, status: "ready", blockedAt: null };
+  const cur = perDay[kidId] || {
+    totalMinutes: 0,
+    startedAt: null,
+    endsAt: null,
+    status: "ready", // "ready" | "active" | "paused" | "ended"
+    blockedAt: null,
+    remainingMs: null,
+    pausedAt: null,
+  };
   perDay[kidId] = { ...cur, ...(patchSession || {}) };
   return { ...data, gameTimeByDay: { ...(data.gameTimeByDay || {}), [ymd]: perDay } };
-}
-
-function msToClock(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  const mm = String(Math.floor(s / 60)).padStart(2, "0");
-  const ss = String(s % 60).padStart(2, "0");
-  return `${mm}:${ss}`;
 }
 
 // -----------------------------
@@ -480,7 +490,6 @@ export default function ChoresModule({ ctx }) {
   const data = useMemo(() => syncHelperExpiry(data0), [data0]);
 
   const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
-  const [helperChooser, setHelperChooser] = useState(null);
   const [pendingConfirm, setPendingConfirm] = useState(null);
 
   useEffect(() => {
@@ -611,7 +620,8 @@ export default function ChoresModule({ ctx }) {
     const perDay = data.gameTimeByDay?.[ymd] || {};
     for (const kidId of Object.keys(perDay)) {
       const s = perDay[kidId];
-      if (!s || s.status !== "active") continue;
+      if (!s) continue;
+      if (s.status !== "active") continue;
       if (!s.endsAt) continue;
       if (now < s.endsAt) continue;
 
@@ -639,7 +649,7 @@ export default function ChoresModule({ ctx }) {
     if (totalMinutes <= 0) return;
 
     const existing = getGameTimeSession(data, ymd, kidId);
-    if (existing?.status === "active" || existing?.status === "ended") return;
+    if (existing?.status === "active" || existing?.status === "paused" || existing?.status === "ended") return;
 
     const now = Date.now();
     const endsAt = now + totalMinutes * 60 * 1000;
@@ -650,6 +660,8 @@ export default function ChoresModule({ ctx }) {
       endsAt,
       status: "active",
       blockedAt: null,
+      remainingMs: null,
+      pausedAt: null,
     });
     patch(next);
 
@@ -657,6 +669,55 @@ export default function ChoresModule({ ctx }) {
       minutes: totalMinutes,
       kidId,
       sourceRef: `gametime:start:${ymd}:${kidId}:${totalMinutes}`,
+    });
+  };
+
+  const pauseGameTimeForKid = async (kidId) => {
+    if (!kidId) return;
+    const cur = getGameTimeSession(data, ymd, kidId);
+    if (!cur || cur.status !== "active" || !cur.endsAt) return;
+
+    const remainingMs = Math.max(0, cur.endsAt - Date.now());
+    const next = setGameTimeSession(data, ymd, kidId, {
+      status: "paused",
+      remainingMs,
+      pausedAt: Date.now(),
+      endsAt: null,
+    });
+    patch(next);
+
+    await blockKidsInternet(ctx, { sourceRef: `gametime:pause:${ymd}:${kidId}` });
+  };
+
+  const resumeGameTimeForKid = async (kidId) => {
+    if (!kidId) return;
+    const cur = getGameTimeSession(data, ymd, kidId);
+    if (!cur || cur.status !== "paused") return;
+
+    const remainingMs = Number(cur.remainingMs || 0) || 0;
+    if (remainingMs <= 0) {
+      const nextEnded = setGameTimeSession(data, ymd, kidId, { status: "ended", remainingMs: 0 });
+      patch(nextEnded);
+      await blockKidsInternet(ctx, { sourceRef: `gametime:resume->end:${ymd}:${kidId}` });
+      return;
+    }
+
+    const now = Date.now();
+    const endsAt = now + remainingMs;
+    const next = setGameTimeSession(data, ymd, kidId, {
+      status: "active",
+      endsAt,
+      remainingMs: null,
+      pausedAt: null,
+      blockedAt: null, // allow end logic to block again if needed
+    });
+    patch(next);
+
+    const minutes = Math.ceil(remainingMs / 60000);
+    await allowKidsInternet(ctx, {
+      minutes,
+      kidId,
+      sourceRef: `gametime:resume:${ymd}:${kidId}:${minutes}`,
     });
   };
 
@@ -713,7 +774,7 @@ export default function ChoresModule({ ctx }) {
               const totalMinutes = Number(data.settings?.gameTimeMinutesOnDailyComplete?.[person] || 0) || 0;
               const session = viewMode === "day" && kidId ? getGameTimeSession(data, ymd, kidId) : null;
 
-              const canShowGameTime =
+              const canStart =
                 viewMode === "day" &&
                 kidId &&
                 daily?.allDone &&
@@ -721,19 +782,24 @@ export default function ChoresModule({ ctx }) {
                 (!session || session.status === "ready" || session.status === null);
 
               const isActive = session?.status === "active" && session?.endsAt;
+              const isPaused = session?.status === "paused";
               const isEnded = session?.status === "ended";
 
-              const remainingMs = isActive ? Math.max(0, session.endsAt - Date.now()) : 0;
+              const remainingMs = isActive
+                ? Math.max(0, session.endsAt - Date.now())
+                : isPaused
+                  ? Math.max(0, Number(session.remainingMs || 0) || 0)
+                  : 0;
 
               return (
                 <div key={person} className="py-2 border-b border-white/10 last:border-b-0">
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <div className="text-sm font-semibold opacity-90">{person}</div>
 
-                    {/* GAME TIME BUTTON (main screen — where you circled) */}
+                    {/* GAME TIME BUTTONS */}
                     {viewMode === "day" && kidId ? (
                       <div className="flex items-center gap-2">
-                        {canShowGameTime ? (
+                        {canStart ? (
                           <button
                             onClick={() => startGameTimeForKid(person)}
                             className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-xs flex items-center gap-2"
@@ -743,10 +809,33 @@ export default function ChoresModule({ ctx }) {
                             Game time ({totalMinutes}m) • Start
                           </button>
                         ) : isActive ? (
-                          <div className="px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-white/90 text-xs flex items-center gap-2">
-                            <Timer className="w-4 h-4" />
-                            Game time: {msToClock(remainingMs)}
-                          </div>
+                          <>
+                            <div className="px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-white/90 text-xs flex items-center gap-2">
+                              <Timer className="w-4 h-4" />
+                              Game time: {msToClock(remainingMs)}
+                            </div>
+                            <button
+                              onClick={() => pauseGameTimeForKid(kidId)}
+                              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white/90 text-xs"
+                              title="Pause game time (blocks internet)"
+                            >
+                              Pause
+                            </button>
+                          </>
+                        ) : isPaused ? (
+                          <>
+                            <div className="px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-white/90 text-xs flex items-center gap-2">
+                              <Timer className="w-4 h-4" />
+                              Paused: {msToClock(remainingMs)}
+                            </div>
+                            <button
+                              onClick={() => resumeGameTimeForKid(kidId)}
+                              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 text-white/90 text-xs"
+                              title="Resume game time (unblocks internet)"
+                            >
+                              Resume
+                            </button>
+                          </>
                         ) : isEnded ? (
                           <div className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-white/60 text-xs">
                             Game time ended
@@ -793,7 +882,9 @@ export default function ChoresModule({ ctx }) {
                           {formatInlineReward(t.reward)}
                         </div>
                         {t.expiresAt && (
-                          <div className="text-xs opacity-50 mt-0.5">Expires: {new Date(t.expiresAt).toLocaleDateString()}</div>
+                          <div className="text-xs opacity-50 mt-0.5">
+                            Expires: {new Date(t.expiresAt).toLocaleDateString()}
+                          </div>
                         )}
                       </div>
                       <button
@@ -868,7 +959,11 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const ymd = useMemo(() => ymdFromDate(baseDate || new Date()), [baseDate]);
 
   const [parentPanelOpen, setParentPanelOpen] = useState(false);
+  const [parentUnlockedSession, setParentUnlockedSession] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState(null);
+
+  // Parent tab toggle
+  const [parentTab, setParentTab] = useState("chores"); // "chores" | "helper"
 
   // Add weekly chore form (parent)
   const [newName, setNewName] = useState("");
@@ -1102,271 +1197,270 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
               {parentPanelOpen ? (
                 <div className="self-start bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                  <ParentGate ctx={ctx} title="Parent tools" onCancel={() => setParentPanelOpen(false)}>
-                    <div className="space-y-6">
-                      {/* SETTINGS (moved here) */}
-                      <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                        <div className="text-white text-xl font-semibold mb-2">Game Time settings</div>
-                        <div className="text-white/60 text-sm mb-4">
-                          When a kid finishes <span className="text-white/80">all chores for the day</span>, they can start Game Time.
-                          Starting it enables internet and starts a countdown.
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Harvey (minutes)</label>
-                            <input
-                              type="number"
-                              value={gameTimeHarvey}
-                              onChange={(e) => setGameTimeHarvey(e.target.value)}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Brady (minutes)</label>
-                            <input
-                              type="number"
-                              value={gameTimeBrady}
-                              onChange={(e) => setGameTimeBrady(e.target.value)}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                            />
-                          </div>
-                        </div>
-
+                  <ParentGate
+                    ctx={ctx}
+                    title="Parent tools"
+                    onCancel={() => setParentPanelOpen(false)}
+                    onUnlocked={() => setParentUnlockedSession(true)}
+                  >
+                    <div className="space-y-4">
+                      {/* TOGGLE */}
+                      <div className="flex gap-2">
                         <button
-                          onClick={saveParentSettings}
-                          className="mt-3 w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all bg-white/15 hover:bg-white/25 border border-white/20"
+                          onClick={() => setParentTab("chores")}
+                          className={`flex-1 px-3 py-2 rounded-xl border text-sm transition-all ${
+                            parentTab === "chores"
+                              ? "bg-white/20 border-white/30 text-white"
+                              : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                          }`}
                         >
-                          Save settings
+                          Weekly chores
                         </button>
-
-                        <div className="text-white/40 text-xs mt-3">
-                          Start triggers <code className="text-white/70">POST /api/v1/network/kids/off</code>. End triggers{" "}
-                          <code className="text-white/70">POST /api/v1/network/kids/on</code> (best effort).
-                        </div>
+                        <button
+                          onClick={() => setParentTab("helper")}
+                          className={`flex-1 px-3 py-2 rounded-xl border text-sm transition-all ${
+                            parentTab === "helper"
+                              ? "bg-white/20 border-white/30 text-white"
+                              : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                          }`}
+                        >
+                          Daily helper
+                        </button>
                       </div>
 
-                      {/* ADD WEEKLY CHORE */}
-                      <div>
-                        <div className="text-white text-xl font-semibold mb-4">Add weekly chore</div>
-
-                        <div className="space-y-4">
+                      {/* WEEKLY CHORES TAB */}
+                      {parentTab === "chores" ? (
+                        <div className="space-y-6">
                           <div>
-                            <label className="text-white/70 text-sm mb-2 block">Day</label>
+                            <div className="text-white text-xl font-semibold mb-4">Add weekly chore</div>
 
-                            <div className="mb-2 flex gap-2">
+                            <div className="space-y-4">
+                              <div>
+                                <label className="text-white/70 text-sm mb-2 block">Day</label>
+
+                                <div className="mb-2 flex gap-2">
+                                  <button
+                                    onClick={() => setNewDays(DAYS.slice(0, 5))}
+                                    className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                                  >
+                                    Weekdays
+                                  </button>
+                                  <button
+                                    onClick={() => setNewDays(DAYS)}
+                                    className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                                  >
+                                    All days
+                                  </button>
+                                  <button
+                                    onClick={() => setNewDays([getDayName(baseDate || new Date())])}
+                                    className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                                  >
+                                    Today only
+                                  </button>
+                                </div>
+
+                                <div className="rounded-2xl bg-white/5 border border-white/10 p-3 grid grid-cols-2 gap-2">
+                                  {DAYS.map((d) => (
+                                    <label key={d} className="flex items-center gap-2 text-white/80 text-sm">
+                                      <input
+                                        type="checkbox"
+                                        checked={Array.isArray(newDays) && newDays.includes(d)}
+                                        onChange={() => {
+                                          const prev = new Set(newDays || []);
+                                          if (prev.has(d)) prev.delete(d);
+                                          else prev.add(d);
+                                          setNewDays(DAYS.filter((day) => prev.has(day)));
+                                        }}
+                                      />
+                                      {d}
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div>
+                                <label className="text-white/70 text-sm mb-2 block">Person</label>
+                                <select
+                                  value={newPerson}
+                                  onChange={(e) => setNewPerson(e.target.value)}
+                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                                >
+                                  {people.map((p) => (
+                                    <option key={p} value={p} className="bg-slate-900 text-white">
+                                      {p}
+                                    </option>
+                                  ))}
+                                  <option value="__custom__" className="bg-slate-900 text-white">
+                                    Other...
+                                  </option>
+                                </select>
+
+                                {newPerson === "__custom__" ? (
+                                  <input
+                                    type="text"
+                                    value={newPersonCustom}
+                                    onChange={(e) => setNewPersonCustom(e.target.value)}
+                                    placeholder="Type a name"
+                                    className="mt-2 w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                                  />
+                                ) : null}
+                              </div>
+
+                              <div>
+                                <label className="text-white/70 text-sm mb-2 block">Chore</label>
+                                <input
+                                  type="text"
+                                  value={newName}
+                                  onChange={(e) => setNewName(e.target.value)}
+                                  onKeyDown={(e) => e.key === "Enter" && parentAddChore()}
+                                  placeholder="e.g., Take out trash"
+                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                                />
+                              </div>
+
                               <button
-                                onClick={() => setNewDays(DAYS.slice(0, 5))}
-                                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                                onClick={parentAddChore}
+                                className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
                               >
-                                Weekdays
-                              </button>
-                              <button
-                                onClick={() => setNewDays(DAYS)}
-                                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
-                              >
-                                All days
-                              </button>
-                              <button
-                                onClick={() => setNewDays([getDayName(baseDate || new Date())])}
-                                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
-                              >
-                                Today only
+                                <Plus className="w-5 h-5" />
+                                Add chore
                               </button>
                             </div>
+                          </div>
 
-                            <div className="rounded-2xl bg-white/5 border border-white/10 p-3 grid grid-cols-2 gap-2">
-                              {DAYS.map((d) => (
-                                <label key={d} className="flex items-center gap-2 text-white/80 text-sm">
+                          <div className="pt-2 border-t border-white/10">
+                            <button
+                              onClick={parentResetWeek}
+                              className="w-full px-3 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-white/70 hover:text-white/90 transition-all text-xs"
+                            >
+                              Reset week (uncheck all)
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {/* HELPER TAB */}
+                      {parentTab === "helper" ? (
+                        <div className="space-y-6">
+                          <div>
+                            <div className="text-white text-xl font-semibold mb-2">Daily Helper tasks</div>
+                            <div className="text-white/60 text-sm mb-4">
+                              One-off bonus tasks. Can expire. Rewards stay here.
+                            </div>
+
+                            <div className="space-y-4">
+                              <div>
+                                <label className="text-white/70 text-sm mb-2 block">Task title</label>
+                                <input
+                                  value={helperTitle}
+                                  onChange={(e) => setHelperTitle(e.target.value)}
+                                  placeholder="e.g., Help clean the garage"
+                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-white/70 text-sm mb-2 block">Expires (optional)</label>
+                                <input
+                                  type="date"
+                                  value={helperExpiryDate}
+                                  onChange={(e) => setHelperExpiryDate(e.target.value)}
+                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                                />
+                              </div>
+
+                              <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                                <div className="text-white/80 text-sm font-semibold mb-2">Assign to</div>
+                                <label className="flex items-center gap-2 text-white/80 text-sm">
                                   <input
                                     type="checkbox"
-                                    checked={Array.isArray(newDays) && newDays.includes(d)}
-                                    onChange={() => {
-                                      const prev = new Set(newDays || []);
-                                      if (prev.has(d)) prev.delete(d);
-                                      else prev.add(d);
-                                      setNewDays(DAYS.filter((day) => prev.has(day)));
-                                    }}
+                                    checked={helperAssignHarvey}
+                                    onChange={(e) => setHelperAssignHarvey(e.target.checked)}
                                   />
-                                  {d}
+                                  Harvey
                                 </label>
-                              ))}
+                                <label className="flex items-center gap-2 text-white/80 text-sm mt-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={helperAssignBrady}
+                                    onChange={(e) => setHelperAssignBrady(e.target.checked)}
+                                  />
+                                  Brady
+                                </label>
+                                <div className="text-white/40 text-xs mt-2">
+                                  If both are checked, both get the rewards.
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                                <div className="text-white/80 text-sm font-semibold mb-2">Bonus reward</div>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div>
+                                    <label className="text-white/70 text-xs block mb-1">Minutes</label>
+                                    <input
+                                      type="number"
+                                      value={helperRewardMinutes}
+                                      onChange={(e) => setHelperRewardMinutes(e.target.value)}
+                                      className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-white/70 text-xs block mb-1">Points</label>
+                                    <input
+                                      type="number"
+                                      value={helperRewardPoints}
+                                      onChange={(e) => setHelperRewardPoints(e.target.value)}
+                                      className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+
+                              <button
+                                onClick={parentAddHelper}
+                                className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
+                              >
+                                <Plus className="w-5 h-5" />
+                                Add helper task
+                              </button>
                             </div>
                           </div>
 
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Person</label>
-                            <select
-                              value={newPerson}
-                              onChange={(e) => setNewPerson(e.target.value)}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                            >
-                              {people.map((p) => (
-                                <option key={p} value={p} className="bg-slate-900 text-white">
-                                  {p}
-                                </option>
-                              ))}
-                              <option value="__custom__" className="bg-slate-900 text-white">
-                                Other...
-                              </option>
-                            </select>
+                          <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                            <div className="text-white font-semibold mb-2">Expired helpers</div>
+                            {expiredHelpers.length ? (
+                              <div className="space-y-2">
+                                {expiredHelpers.map((t) => (
+                                  <div key={t.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                                    <div className="text-white/90 text-sm font-semibold">{t.title}</div>
+                                    <div className="text-white/60 text-xs">
+                                      Assigned: {(t.assignedTo || []).join(", ")}
+                                      {formatInlineReward(t.reward)}
+                                    </div>
 
-                            {newPerson === "__custom__" ? (
-                              <input
-                                type="text"
-                                value={newPersonCustom}
-                                onChange={(e) => setNewPersonCustom(e.target.value)}
-                                placeholder="Type a name"
-                                className="mt-2 w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                              />
-                            ) : null}
+                                    <div className="mt-2 flex gap-2">
+                                      <button
+                                        onClick={() => parentReactivateHelper(t.id, "")}
+                                        className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
+                                      >
+                                        Reactivate
+                                      </button>
+                                      <button
+                                        onClick={() => parentDeleteHelper(t.id)}
+                                        className="px-3 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-200/20 text-red-100 text-sm"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="text-white/40 text-sm">None</div>
+                            )}
                           </div>
-
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Chore</label>
-                            <input
-                              type="text"
-                              value={newName}
-                              onChange={(e) => setNewName(e.target.value)}
-                              onKeyDown={(e) => e.key === "Enter" && parentAddChore()}
-                              placeholder="e.g., Take out trash"
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                            />
-                          </div>
-
-                          <button
-                            onClick={parentAddChore}
-                            className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
-                          >
-                            <Plus className="w-5 h-5" />
-                            Add chore
-                          </button>
                         </div>
-                      </div>
-
-                      {/* HELPER TASKS */}
-                      <div>
-                        <div className="text-white text-xl font-semibold mb-2">Daily Helper tasks</div>
-                        <div className="text-white/60 text-sm mb-4">One-off bonus tasks. Can expire. Rewards stay here.</div>
-
-                        <div className="space-y-4">
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Task title</label>
-                            <input
-                              value={helperTitle}
-                              onChange={(e) => setHelperTitle(e.target.value)}
-                              placeholder="e.g., Help clean the garage"
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Expires (optional)</label>
-                            <input
-                              type="date"
-                              value={helperExpiryDate}
-                              onChange={(e) => setHelperExpiryDate(e.target.value)}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                            />
-                          </div>
-
-                          <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                            <div className="text-white/80 text-sm font-semibold mb-2">Assign to</div>
-                            <label className="flex items-center gap-2 text-white/80 text-sm">
-                              <input
-                                type="checkbox"
-                                checked={helperAssignHarvey}
-                                onChange={(e) => setHelperAssignHarvey(e.target.checked)}
-                              />
-                              Harvey
-                            </label>
-                            <label className="flex items-center gap-2 text-white/80 text-sm mt-2">
-                              <input
-                                type="checkbox"
-                                checked={helperAssignBrady}
-                                onChange={(e) => setHelperAssignBrady(e.target.checked)}
-                              />
-                              Brady
-                            </label>
-                            <div className="text-white/40 text-xs mt-2">If both are checked, both get the rewards.</div>
-                          </div>
-
-                          <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                            <div className="text-white/80 text-sm font-semibold mb-2">Bonus reward</div>
-                            <div className="grid grid-cols-2 gap-3">
-                              <div>
-                                <label className="text-white/70 text-xs block mb-1">Minutes</label>
-                                <input
-                                  type="number"
-                                  value={helperRewardMinutes}
-                                  onChange={(e) => setHelperRewardMinutes(e.target.value)}
-                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                                />
-                              </div>
-                              <div>
-                                <label className="text-white/70 text-xs block mb-1">Points</label>
-                                <input
-                                  type="number"
-                                  value={helperRewardPoints}
-                                  onChange={(e) => setHelperRewardPoints(e.target.value)}
-                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                                />
-                              </div>
-                            </div>
-                          </div>
-
-                          <button
-                            onClick={parentAddHelper}
-                            className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
-                          >
-                            <Plus className="w-5 h-5" />
-                            Add helper task
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                        <div className="text-white font-semibold mb-2">Expired helpers</div>
-                        {expiredHelpers.length ? (
-                          <div className="space-y-2">
-                            {expiredHelpers.map((t) => (
-                              <div key={t.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
-                                <div className="text-white/90 text-sm font-semibold">{t.title}</div>
-                                <div className="text-white/60 text-xs">
-                                  Assigned: {(t.assignedTo || []).join(", ")}
-                                  {formatInlineReward(t.reward)}
-                                </div>
-
-                                <div className="mt-2 flex gap-2">
-                                  <button
-                                    onClick={() => parentReactivateHelper(t.id, "")}
-                                    className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
-                                  >
-                                    Reactivate
-                                  </button>
-                                  <button
-                                    onClick={() => parentDeleteHelper(t.id)}
-                                    className="px-3 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-200/20 text-red-100 text-sm"
-                                  >
-                                    Delete
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="text-white/40 text-sm">None</div>
-                        )}
-                      </div>
-
-                      <div className="pt-4 border-t border-white/10">
-                        <button
-                          onClick={parentResetWeek}
-                          className="w-full px-3 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-white/70 hover:text-white/90 transition-all text-xs"
-                        >
-                          Reset week (uncheck all)
-                        </button>
-                      </div>
+                      ) : null}
                     </div>
                   </ParentGate>
                 </div>
@@ -1492,6 +1586,57 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                       </div>
                     ) : null}
                   </div>
+
+                  {/* GAME TIME SETTINGS MOVED HERE (RIGHT SIDE, BELOW DAILY HELPER) */}
+                  {parentPanelOpen ? (
+                    <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
+                      <div className="text-white text-xl font-semibold mb-1">Game Time settings</div>
+                      <div className="text-white/60 text-sm mb-4">
+                        Set minutes unlocked when they finish all chores for the day.
+                      </div>
+
+                      {parentUnlockedSession ? (
+                        <>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-white/70 text-sm mb-2 block">Harvey (minutes)</label>
+                              <input
+                                type="number"
+                                value={gameTimeHarvey}
+                                onChange={(e) => setGameTimeHarvey(e.target.value)}
+                                className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-white/70 text-sm mb-2 block">Brady (minutes)</label>
+                              <input
+                                type="number"
+                                value={gameTimeBrady}
+                                onChange={(e) => setGameTimeBrady(e.target.value)}
+                                className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                              />
+                            </div>
+                          </div>
+
+                          <button
+                            onClick={saveParentSettings}
+                            className="mt-3 w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all bg-white/15 hover:bg-white/25 border border-white/20"
+                          >
+                            Save settings
+                          </button>
+
+                          <div className="text-white/40 text-xs mt-3">
+                            Start triggers <code className="text-white/70">POST /api/v1/network/kids/off</code>. End (and
+                            Pause) triggers <code className="text-white/70">POST /api/v1/network/kids/on</code>.
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-white/60 text-sm">
+                          Unlock Parent tools to edit settings.
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
 
                   <div className="text-center text-white/40 text-sm">
                     Press <span className="text-white/60">ESC</span> to exit
