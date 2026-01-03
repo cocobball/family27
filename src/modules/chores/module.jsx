@@ -17,6 +17,7 @@ import {
 } from "./helpers.js";
 
 import { getRewardsData, unlockParent, isParentUnlocked, defaultRewardsData } from "../rewards/helpers.js";
+import { exportChoresToXml, importChoresFromXml } from "./xml.js";
 
 // -----------------------------
 // lightweight global toggle
@@ -631,34 +632,9 @@ export default function ChoresModule({ ctx }) {
     return () => clearInterval(t);
   }, []);
 
-  // Best-effort: if we have an active session that has ended, mark ended + block once
-  useEffect(() => {
-    const now = Date.now();
-    let next = data;
-    let changed = false;
-
-    const perDay = data.gameTimeByDay?.[ymd] || {};
-    for (const kidId of Object.keys(perDay)) {
-      const s = perDay[kidId];
-      if (!s) continue;
-      if (s.status !== "active") continue;
-      if (!s.endsAt) continue;
-      if (now < s.endsAt) continue;
-
-      changed = true;
-      next = setGameTimeSession(next, ymd, kidId, { status: "ended" });
-
-      // block once
-      const ended = getGameTimeSession(next, ymd, kidId);
-      if (!ended?.blockedAt) {
-        next = setGameTimeSession(next, ymd, kidId, { blockedAt: Date.now() });
-        blockKidsInternet(ctx, { sourceRef: `gametime:end:${ymd}:${kidId}` });
-      }
-    }
-
-    if (changed) patch(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, ymd]);
+  // NOTE: Game time session expiry check is now handled explicitly in user actions,
+  // not auto-saved on every render. The checkGameTimeExpiry helper can be called
+  // when needed (e.g., when user clicks pause/resume/view status).
 
   const startGameTimeForKid = async (person) => {
     const daily = getDailyCompletionState(data, baseDate || new Date(), person);
@@ -985,6 +961,10 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   // Parent tab toggle
   const [parentTab, setParentTab] = useState("chores"); // "chores" | "helper"
 
+  // Import/Export state
+  const [ioError, setIoError] = useState("");
+  const fileInputRef = useRef(null);
+
   // Add weekly chore form (parent)
   const [newName, setNewName] = useState("");
   const [newPerson, setNewPerson] = useState(PEOPLE_DEFAULTS[0]);
@@ -1179,6 +1159,51 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
         },
       },
     });
+  };
+
+  const doExportXml = async () => {
+    try {
+      setIoError("");
+      const xml = exportChoresToXml(normalized);
+
+      // copy to clipboard if available
+      try {
+        await navigator.clipboard?.writeText?.(xml);
+      } catch {}
+
+      // download file
+      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `chores-export-${new Date().toISOString().slice(0, 10)}.xml`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setIoError(e?.message || "Export failed.");
+    }
+  };
+
+  const doImportXmlText = (xmlText) => {
+    try {
+      setIoError("");
+      const imported = importChoresFromXml(xmlText);
+
+      // IMPORTANT: persist immediately (server-backed state)
+      patch(imported);
+
+      // close panel or keep open—your call
+    } catch (e) {
+      setIoError(e?.message || "Import failed.");
+    }
+  };
+
+  const onPickImportFile = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    doImportXmlText(text);
   };
 
   if (!enabled) return null;
@@ -1487,6 +1512,44 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                           </div>
                         </div>
                       ) : null}
+
+                      {/* IMPORT / EXPORT */}
+                      <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                        <div className="text-white font-semibold mb-1">Import / Export</div>
+                        <div className="text-white/60 text-xs mb-3">
+                          Export or restore the entire Chores module (weekly chores, helper tasks, done history, game time sessions, settings).
+                        </div>
+
+                        <div className="flex flex-col gap-2">
+                          <button
+                            onClick={doExportXml}
+                            className="w-full px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
+                          >
+                            Export XML (download + copy)
+                          </button>
+
+                          <button
+                            onClick={() => fileInputRef.current?.click()}
+                            className="w-full px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
+                          >
+                            Import XML file
+                          </button>
+
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".xml,application/xml,text/xml"
+                            className="hidden"
+                            onChange={(e) => onPickImportFile(e.target.files?.[0] || null)}
+                          />
+
+                          {ioError ? <div className="text-red-200 text-xs mt-2">{ioError}</div> : null}
+
+                          <div className="text-white/40 text-[11px] mt-2">
+                            Import replaces the current Chores state immediately.
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </ParentGate>
                 </div>

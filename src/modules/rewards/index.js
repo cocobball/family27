@@ -9,16 +9,12 @@ function attachRewardsListeners(ctx) {
 
   ctx.eventBus.on("REWARDS/CREDIT", (payload) => {
     const res = creditRewards(ctx, payload);
-    if (!res.ok) {
-      console.warn("[REWARDS] credit failed:", res.error, payload);
-    }
+    if (!res.ok) console.warn("[REWARDS] credit failed:", res.error, payload);
   });
 
   ctx.eventBus.on("REWARDS/DEBIT", (payload) => {
     const res = debitRewards(ctx, payload);
-    if (!res.ok) {
-      console.warn("[REWARDS] debit failed:", res.error, payload);
-    }
+    if (!res.ok) console.warn("[REWARDS] debit failed:", res.error, payload);
   });
 }
 

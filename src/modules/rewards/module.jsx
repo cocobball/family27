@@ -5,18 +5,29 @@ import {
   redeemMinutes,
   tickSessions,
   cancelSession,
+  pauseSession,
+  resumeSession,
   getRewardsData,
   unlockParent,
   lockParent,
 } from "./helpers.js";
-import { unlockKid, lockKid } from "../../core/networkAdapter.js";
 
-function fmtRemaining(endsAt) {
-  const ms = Math.max(0, new Date(endsAt).getTime() - Date.now());
-  const s = Math.floor(ms / 1000);
+function fmtRemainingMs(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
   const mm = String(Math.floor(s / 60)).padStart(2, "0");
   const ss = String(s % 60).padStart(2, "0");
   return `${mm}:${ss}`;
+}
+
+function fmtRemainingFromSession(session) {
+  if (!session) return "00:00";
+  if (session.status === "active" && session.endsAt) {
+    return fmtRemainingMs(Math.max(0, Number(session.endsAt) - Date.now()));
+  }
+  if (session.status === "paused") {
+    return fmtRemainingMs(Math.max(0, Number(session.remainingMs || 0)));
+  }
+  return "00:00";
 }
 
 const S = {
@@ -50,6 +61,15 @@ const S = {
     color: "white",
     cursor: "pointer",
   },
+  btnSmall: {
+    padding: "6px 10px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(255,255,255,0.10)",
+    color: "white",
+    cursor: "pointer",
+    fontSize: 12,
+  },
   label: { fontSize: 12, opacity: 0.85, marginBottom: 6 },
 };
 
@@ -67,36 +87,18 @@ export default function RewardsModule({ ctx }) {
     const offCredit = ctx.eventBus.on("REWARDS/CREDIT", (payload) => {
       const res = creditRewards(ctx, payload);
       if (!res.ok && res.error === "PARENT_LOCKED") {
-        // If some UI accidentally tried, don't spam alerts
         console.warn("[REWARDS] Credit rejected (locked)");
       }
       rerender((x) => x + 1);
     });
 
-    const offStart = ctx.eventBus.on("NETWORK/SESSION_STARTED", async (payload) => {
-      console.log("[NETWORK/SESSION_STARTED]", payload);
-      await unlockKid({
-        kidId: payload.kidId,
-        minutes: null,
-        targets: payload.target ? [payload.target] : undefined,
-      });
-    });
-
-    const offEnd = ctx.eventBus.on("NETWORK/SESSION_ENDED", async (payload) => {
-      console.log("[NETWORK/SESSION_ENDED]", payload);
-      await lockKid({ kidId: payload.kidId, targets: undefined });
-      rerender((x) => x + 1);
-    });
-
-    const t = setInterval(() => {
-      tickSessions(ctx);
+    const t = setInterval(async () => {
+      await tickSessions(ctx);
       rerender((x) => x + 1);
     }, 1000);
 
     return () => {
       try { offCredit && offCredit(); } catch {}
-      try { offStart && offStart(); } catch {}
-      try { offEnd && offEnd(); } catch {}
       clearInterval(t);
     };
   }, [ctx]);
@@ -105,6 +107,9 @@ export default function RewardsModule({ ctx }) {
   const ledger = data.ledger || [];
   const sessions = data.sessions || [];
   const parentUnlocked = (data.parent?.unlockedUntil || 0) > Date.now();
+
+  const sessionForKid = (kid) =>
+    sessions.find((s) => s.kidId === kid && (s.status === "active" || s.status === "paused")) || null;
 
   return (
     <div style={{ padding: 16, color: "white" }}>
@@ -213,17 +218,17 @@ export default function RewardsModule({ ctx }) {
         </div>
       </div>
 
-      {/* Balances / Redeem (kids can use) */}
-      <h3 style={{ margin: "0 0 10px 0" }}>Balances</h3>
+      {/* Balances / Game time sessions */}
+      <h3 style={{ margin: "0 0 10px 0" }}>Balances / Game time</h3>
 
       <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
         {FIXED_KIDS.map((k) => {
           const w = data.wallets[k.id];
-          const active = sessions.find((s) => s.kidId === k.id && s.status === "active");
+          const sess = sessionForKid(k.id);
 
           return (
             <div key={k.id} style={S.card}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" }}>
                 <div>
                   <div style={{ fontWeight: 900, fontSize: 16 }}>{k.name}</div>
                   <div>Minutes: {w.minutes}</div>
@@ -231,21 +236,88 @@ export default function RewardsModule({ ctx }) {
                 </div>
 
                 <div style={{ textAlign: "right" }}>
-                  {active ? (
+                  {sess ? (
                     <>
-                      <div style={{ fontWeight: 800 }}>Ends in {fmtRemaining(active.endsAt)}</div>
-                      <button style={{ ...S.btnDanger, marginTop: 8 }} onClick={() => cancelSession(ctx, active.id)}>
-                        Cancel session
-                      </button>
+                      <div style={{ fontWeight: 800 }}>
+                        {sess.status === "active" ? "Active" : "Paused"} • {fmtRemainingFromSession(sess)}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8, flexWrap: "wrap" }}>
+                        {sess.status === "active" ? (
+                          <button
+                            style={S.btnSmall}
+                            onClick={async () => {
+                              await pauseSession(ctx, sess.id);
+                              rerender((x) => x + 1);
+                            }}
+                            title="Pause (blocks kids internet if no other active session)"
+                          >
+                            Pause
+                          </button>
+                        ) : (
+                          <button
+                            style={S.btnSmall}
+                            onClick={async () => {
+                              await resumeSession(ctx, sess.id);
+                              rerender((x) => x + 1);
+                            }}
+                            title="Resume (allows kids internet)"
+                          >
+                            Resume
+                          </button>
+                        )}
+
+                        <button
+                          style={S.btnDanger}
+                          onClick={async () => {
+                            await cancelSession(ctx, sess.id);
+                            rerender((x) => x + 1);
+                          }}
+                          title="End this kid's session (shared internet only blocks if nobody else is active)"
+                        >
+                          End
+                        </button>
+                      </div>
                     </>
                   ) : (
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      <button style={S.btn(false)} onClick={() => redeemMinutes(ctx, k.id, 15)}>Redeem 15</button>
-                      <button style={S.btn(false)} onClick={() => redeemMinutes(ctx, k.id, 30)}>Redeem 30</button>
-                      <button style={S.btn(false)} onClick={() => redeemMinutes(ctx, k.id, 60)}>Redeem 60</button>
+                      <button
+                        style={S.btn(false)}
+                        onClick={async () => {
+                          const res = await redeemMinutes(ctx, k.id, 15);
+                          if (!res.ok) alert(res.error || "Failed");
+                          rerender((x) => x + 1);
+                        }}
+                      >
+                        Redeem 15
+                      </button>
+                      <button
+                        style={S.btn(false)}
+                        onClick={async () => {
+                          const res = await redeemMinutes(ctx, k.id, 30);
+                          if (!res.ok) alert(res.error || "Failed");
+                          rerender((x) => x + 1);
+                        }}
+                      >
+                        Redeem 30
+                      </button>
+                      <button
+                        style={S.btn(false)}
+                        onClick={async () => {
+                          const res = await redeemMinutes(ctx, k.id, 60);
+                          if (!res.ok) alert(res.error || "Failed");
+                          rerender((x) => x + 1);
+                        }}
+                      >
+                        Redeem 60
+                      </button>
                     </div>
                   )}
                 </div>
+              </div>
+
+              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
+                Note: Firewalla currently uses a shared kids rule, so internet stays ON while either kid has an active session.
               </div>
             </div>
           );
