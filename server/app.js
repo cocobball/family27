@@ -5,6 +5,7 @@ import path from "path";
 import fs, { promises as fsp } from "fs";
 import storage from "./storage/index.js";
 import { pauseRule, resumeRule, kidsStatus } from "./firewalla/controller.js";
+import registerBackupsRoutes from "./routes/backup.js";
 
 // ✅ Firewalla endpoints (local SSH/MSP policy toggle)
 console.log("Firewalla host:", process.env.FIREWALLA_HOST);
@@ -767,6 +768,13 @@ app.get("/api/v1/photos/local/folders", async (req, res) => {
   }
 });
 
+// Register backup routes after other route registrations
+try {
+  registerBackupsRoutes(app);
+} catch (e) {
+  console.warn("[app] failed to register backup routes:", e);
+}
+
 // ----- Listen -----
 const PORT = Number(process.env.PORT || 3000);
 app.listen(PORT, "127.0.0.1", async () => {
@@ -787,3 +795,5 @@ app.listen(PORT, "127.0.0.1", async () => {
     }
   }, SESSION_TICK_MS);
 });
+
+
