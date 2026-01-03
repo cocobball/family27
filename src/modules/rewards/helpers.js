@@ -35,7 +35,12 @@ export function defaultRewardsData() {
 }
 
 export function getRewardsData(ctx) {
-  const existing = ctx.store.get();
+  let existing;
+  if (ctx?.store?.getModuleData) {
+    existing = ctx.store.getModuleData("rewards", defaultRewardsData());
+  } else {
+    existing = ctx.store.get && typeof ctx.store.get === "function" ? ctx.store.get() : null;
+  }
   const data = (!existing || existing.version !== 1) ? defaultRewardsData() : existing;
 
   // Ensure fixed kids/wallets exist even if old data
@@ -51,7 +56,27 @@ export function getRewardsData(ctx) {
 }
 
 export function saveRewardsData(ctx, data) {
-  ctx.store.set(data);
+  if (ctx?.store?.setModuleData) {
+    ctx.store.setModuleData("rewards", data);
+    return;
+  }
+
+  // Fallback: avoid overwriting unrelated module state. Merge into existing store if possible.
+  if (ctx?.store?.get && typeof ctx.store.get === "function" && ctx?.store?.set && typeof ctx.store.set === "function") {
+    try {
+      const cur = ctx.store.get() || {};
+      // If the current store looks like the rewards data itself (legacy), replace it.
+      const next = cur && cur.version === 1 ? data : { ...(cur || {}), ...data };
+      ctx.store.set(next);
+      return;
+    } catch (e) {
+      // fallback to direct set if merge fails
+    }
+  }
+
+  if (ctx?.store?.set) {
+    ctx.store.set(data);
+  }
 }
 
 export function isParentUnlocked(data) {
