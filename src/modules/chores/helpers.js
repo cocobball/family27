@@ -1,6 +1,6 @@
 // src/modules/chores/helpers.js
 
-export const CHORES_SCHEMA_VERSION = 3;
+export const CHORES_SCHEMA_VERSION = 4;
 
 export const PEOPLE_DEFAULTS = ["Cory", "Anna", "Brady", "Harvey"];
 export const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -24,6 +24,10 @@ export function defaultChoresData() {
     helperTasks: [], // { id, title, assignedTo: ["harvey","brady"], reward:{minutes,points}, expiresAt?:number|null, status:"active"|"expired"|"completed", createdAt:number, completedAt?:number|null, completedBy?:string[] }
     helperGrants: {}, // { [helperId]: { [kidId]: { minutes?:true, points?:true, grantedAt:number } } }
 
+    // internet grants (daily) - idempotent bookkeeping
+    // { [ymd]: { [kidId]: { minutes:number, grantedAt:number } } }
+    internetGrantsByDay: {},
+
     // UI
     viewMode: "day", // "day" | "week"
 
@@ -32,6 +36,13 @@ export function defaultChoresData() {
       weeklyBonusByPerson: {
         Harvey: { minutes: 0, points: 0 },
         Brady: { minutes: 0, points: 0 },
+      },
+
+      // If a kid finishes ALL chores for the selected day, show an "Enable internet" button.
+      // This is the duration to allow when they tap it.
+      internetMinutesOnDailyComplete: {
+        Harvey: 0,
+        Brady: 0,
       },
     },
   };
@@ -55,10 +66,18 @@ export function normalizeChoresData(raw) {
   const helperTasks = Array.isArray(s.helperTasks) ? s.helperTasks : [];
   const helperGrants = s.helperGrants && typeof s.helperGrants === "object" ? s.helperGrants : {};
 
+  const internetGrantsByDay =
+    s.internetGrantsByDay && typeof s.internetGrantsByDay === "object" ? s.internetGrantsByDay : {};
+
   const settings = s.settings && typeof s.settings === "object" ? s.settings : {};
   const weeklyBonusByPerson =
     settings.weeklyBonusByPerson && typeof settings.weeklyBonusByPerson === "object"
       ? settings.weeklyBonusByPerson
+      : {};
+
+  const internetMinutesOnDailyComplete =
+    settings.internetMinutesOnDailyComplete && typeof settings.internetMinutesOnDailyComplete === "object"
+      ? settings.internetMinutesOnDailyComplete
       : {};
 
   const mergedPeople = Array.from(new Set([...PEOPLE_DEFAULTS, ...people])).filter(Boolean);
@@ -73,12 +92,17 @@ export function normalizeChoresData(raw) {
     weeklyBonusGrantsByWeek,
     helperTasks: helperTasks.map((t) => normalizeHelperTask(t)).filter(Boolean),
     helperGrants,
+    internetGrantsByDay,
     settings: {
       ...base.settings,
       ...settings,
       weeklyBonusByPerson: {
         ...base.settings.weeklyBonusByPerson,
         ...weeklyBonusByPerson,
+      },
+      internetMinutesOnDailyComplete: {
+        ...base.settings.internetMinutesOnDailyComplete,
+        ...internetMinutesOnDailyComplete,
       },
     },
   };
@@ -151,6 +175,14 @@ export function dateFromYMD(ymd) {
   const [y, m, d] = ymd.split("-").map(Number);
   if (!y || !m || !d) return new Date();
   return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+
+export function ymdFromDate(d = new Date()) {
+  const dt = new Date(d);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
 }
 
 export function groupChoresByDay(chores) {

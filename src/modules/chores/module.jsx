@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { ClipboardList, X, Plus, Settings, Check, Trash2 } from "lucide-react";
+import { ClipboardList, X, Plus, Settings, Check, Trash2, Wifi } from "lucide-react";
 import {
   DAYS,
   PEOPLE_DEFAULTS,
@@ -9,6 +9,7 @@ import {
   getWeekKey,
   getDayName,
   dateFromYMD,
+  ymdFromDate,
   groupChoresByPerson,
   groupChoresByDay,
   getChoresForDateWithDone,
@@ -44,7 +45,7 @@ export function useChoreModeEnabled() {
 // ctx helpers
 // -----------------------------
 function getBus(ctx) {
-  return ctx.bus || ctx.eventBus;
+  return ctx.eventBus || ctx.bus;
 }
 function getShared(ctx) {
   return ctx.shared || ctx.sharedState;
@@ -77,15 +78,10 @@ function sharedSet(ctx, patchOrKey, maybeVal) {
 // -----------------------------
 // Calendar-style module storage hook (server-backed)
 // -----------------------------
-// IMPORTANT:
-// - Use ctx.store.get/set ONLY (module-scoped state) for persistence.
-// - Do not use getModuleData/setModuleData for this module’s own data.
-// - Do not auto-write (no "save on render" effects).
 function useModuleData(ctx, defaultFn) {
   const [rev, setRev] = useState(0);
   const s = ctx?.store;
 
-  // Read data: prefer module-scoped getModuleData, fall back to root get
   const data = useMemo(() => {
     if (s?.getModuleData) {
       return s.getModuleData("chores", defaultFn());
@@ -93,14 +89,12 @@ function useModuleData(ctx, defaultFn) {
     return s?.get?.(defaultFn()) ?? defaultFn();
   }, [ctx, s, defaultFn, rev]);
 
-  // Subscribe to store updates if available
   useEffect(() => {
     if (!s || typeof s.subscribe !== "function") return;
     const unsub = s.subscribe(() => setRev((r) => r + 1));
     return () => unsub?.();
   }, [s]);
 
-  // Patch: merge partial update into current data
   const patch = useCallback(
     (partialOrFullNext) => {
       let cur;
@@ -160,6 +154,42 @@ function emitRewardsDebit(ctx, { kidId, currency, amount, sourceRef, reason, met
 }
 
 // -----------------------------
+// Network bridge (event + optional API call)
+// -----------------------------
+// We do BOTH:
+// 1) emit an event so the Network module can own timers later
+// 2) POST /api/v1/network/kids/off as the immediate "allow" action
+async function allowKidsInternet(ctx, { minutes = 0, kidId = null, sourceRef = "" } = {}) {
+  const bus = getBus(ctx);
+
+  // Event for in-app wiring (Network module can listen)
+  bus?.emit?.("NETWORK/KIDS/OFF", {
+    minutes: Number(minutes) || 0,
+    kidId: kidId || null,
+    sourceModule: "chores",
+    sourceRef: sourceRef || "",
+    at: Date.now(),
+  });
+
+  // Direct API (works even if Network module doesn’t listen yet)
+  try {
+    await fetch("/api/v1/network/kids/off", { method: "POST" });
+  } catch (e) {
+    console.warn("[CHORES] allowKidsInternet fetch failed", e);
+  }
+}
+
+async function blockKidsInternet(ctx, { sourceRef = "" } = {}) {
+  const bus = getBus(ctx);
+  bus?.emit?.("NETWORK/KIDS/ON", { sourceModule: "chores", sourceRef: sourceRef || "", at: Date.now() });
+  try {
+    await fetch("/api/v1/network/kids/on", { method: "POST" });
+  } catch (e) {
+    console.warn("[CHORES] blockKidsInternet fetch failed", e);
+  }
+}
+
+// -----------------------------
 // helpers
 // -----------------------------
 function sortWeekList(list) {
@@ -210,62 +240,39 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
 
   const s = ctx?.store;
 
-  // Read rewards module state fresh on every render
   const rewardsData = useMemo(() => {
     if (s?.getModuleData) return s.getModuleData("rewards", defaultRewardsData());
     return getRewardsData(ctx);
   }, [ctx, s, rev]);
 
-  // Subscribe to store changes if available
   useEffect(() => {
     const s = ctx?.store;
     if (!s || typeof s.subscribe !== "function") return;
-    const unsub = s.subscribe(() => setRev(r => r + 1));
+    const unsub = s.subscribe(() => setRev((r) => r + 1));
     return () => unsub?.();
   }, [ctx]);
 
-  // Clear local unlock when rewards unlock expires (with debounce to prevent flash)
   useEffect(() => {
     if (!localUnlocked) return;
-
-    // Only clear local unlock if rewards data definitively shows expired after a small delay
     const timer = setTimeout(() => {
       if (isParentUnlocked(rewardsData)) return;
       setLocalUnlocked(false);
     }, 100);
-
     return () => clearTimeout(timer);
   }, [localUnlocked, rewardsData]);
 
   const unlocked = localUnlocked || isParentUnlocked(rewardsData);
-
   if (unlocked) return children;
 
   const handleUnlock = () => {
-    // Create a wrapper ctx that forces unlockParent to write to rewards module
-    const rewardsCtx = {
-      ...ctx,
-      store: {
-        ...ctx.store,
-        get: () => (ctx.store?.getModuleData ? ctx.store.getModuleData("rewards", defaultRewardsData()) : getRewardsData(ctx)),
-        set: (next) => {
-          if (ctx.store?.setModuleData) return ctx.store.setModuleData("rewards", next);
-          return ctx.store?.set?.(next);
-        },
-      },
-    };
-
-    // Call unlockParent with the wrapped context
-    const ok = ctx.store?.setModuleData ? unlockParent(rewardsCtx, pin, 5) : unlockParent(ctx, pin, 5);
-
+    const ok = unlockParent(ctx, pin, 5);
     if (!ok) {
       setErr("Incorrect password.");
       return;
     }
-
     setErr("");
     setLocalUnlocked(true);
-    setRev(r => r + 1);
+    setRev((r) => r + 1);
   };
 
   return (
@@ -534,6 +541,30 @@ function reverseHelperTaskIfCompleted(ctx, choresData, helperTaskId) {
 }
 
 // -----------------------------
+// Daily completion helpers (internet button)
+// -----------------------------
+function getDailyCompletionState(data, baseDate, person) {
+  const kidId = mapPersonToKidId(person);
+  if (!kidId) return { kidId: null, total: 0, done: 0, allDone: false };
+
+  const choresForDay = getChoresForDateWithDone(data, baseDate).filter((c) => c.person === person);
+  const total = choresForDay.length;
+  const done = choresForDay.filter((c) => c.done).length;
+  return { kidId, total, done, allDone: total > 0 && done === total };
+}
+
+function hasInternetGrantForDay(data, ymd, kidId) {
+  const perDay = data.internetGrantsByDay?.[ymd] || {};
+  return !!perDay?.[kidId];
+}
+
+function recordInternetGrantForDay(data, ymd, kidId, minutes) {
+  const perDay = { ...(data.internetGrantsByDay?.[ymd] || {}) };
+  perDay[kidId] = { minutes: Number(minutes) || 0, grantedAt: Date.now() };
+  return { ...data, internetGrantsByDay: { ...(data.internetGrantsByDay || {}), [ymd]: perDay } };
+}
+
+// -----------------------------
 // Module root
 // -----------------------------
 export default function ChoresModule({ ctx }) {
@@ -543,7 +574,6 @@ export default function ChoresModule({ ctx }) {
   const { data: rawData, patch } = useModuleData(ctx, defaultChoresData);
   const data0 = useMemo(() => normalizeChoresData(rawData), [rawData]);
 
-  // Derive helper expiry for UI without auto-writing back to the store.
   const data = useMemo(() => syncHelperExpiry(data0), [data0]);
 
   const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
@@ -587,22 +617,6 @@ export default function ChoresModule({ ctx }) {
     () => (data.helperTasks || []).filter((t) => t.status === "active"),
     [data.helperTasks]
   );
-
-  const childCompleteHelperFromWidget = (task) => {
-    setPendingConfirm({ type: "helper", task });
-  };
-
-  const confirmHelperChooserFromWidget = (selectedKidIds) => {
-    const s = syncHelperExpiry(data);
-    const task = (s.helperTasks || []).find((t) => t.id === helperChooser?.taskId);
-    if (!task) {
-      setHelperChooser(null);
-      return;
-    }
-    const next = awardHelperTask(ctx, s, task, selectedKidIds);
-    patch(next);
-    setHelperChooser(null);
-  };
 
   const cardModel = useMemo(() => {
     const weekKey = getWeekKey(baseDate);
@@ -822,7 +836,7 @@ export default function ChoresModule({ ctx }) {
                         )}
                       </div>
                       <button
-                        onClick={() => childCompleteHelperFromWidget(t)}
+                        onClick={() => setPendingConfirm({ type: "helper", task: t })}
                         className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-xs"
                       >
                         Complete
@@ -844,35 +858,13 @@ export default function ChoresModule({ ctx }) {
         </button>
       </div>
 
-      <ChoreModeOverlay 
-        ctx={ctx} 
-        data={data} 
-        patch={patch} 
-        baseDate={baseDate} 
-        onChildMarkDone={markDoneChild}
-        helperChooser={helperChooser}
-        setHelperChooser={setHelperChooser}
-        onConfirmHelperChooser={confirmHelperChooserFromWidget}
-      />
+      <ChoreModeOverlay ctx={ctx} data={data} patch={patch} baseDate={baseDate} onChildMarkDone={markDoneChild} />
       <SettingsOverlay ctx={ctx} open={settingsOpen} onClose={() => setSettingsOpen(false)} data={data} patch={patch} />
-
-      {helperChooser ? (
-        <HelperChooserModal
-          task={(data.helperTasks || []).find((t) => t.id === helperChooser.taskId)}
-          options={helperChooser.options}
-          onCancel={() => setHelperChooser(null)}
-          onConfirm={confirmHelperChooserFromWidget}
-        />
-      ) : null}
 
       {pendingConfirm ? (
         <ConfirmCompleteModal
           title="Confirm completion"
-          subtitle={
-            pendingConfirm.type === "chore"
-              ? pendingConfirm.chore.name
-              : pendingConfirm.task.title
-          }
+          subtitle={pendingConfirm.type === "chore" ? pendingConfirm.chore.name : pendingConfirm.task.title}
           details={
             pendingConfirm.type === "chore"
               ? `Assigned to: ${pendingConfirm.chore.person}`
@@ -888,12 +880,8 @@ export default function ChoresModule({ ctx }) {
               const nowTask = (s.helperTasks || []).find((t) => t.id === pendingConfirm.task.id);
               if (nowTask && nowTask.status === "active") {
                 const options = nowTask.assignedTo || [];
-                if (options.length <= 1) {
-                  const next = awardHelperTask(ctx, s, nowTask, options);
-                  patch(next);
-                } else {
-                  setHelperChooser({ taskId: nowTask.id, options });
-                }
+                const next = awardHelperTask(ctx, s, nowTask, options);
+                patch(next);
               }
               setPendingConfirm(null);
             }
@@ -907,7 +895,7 @@ export default function ChoresModule({ ctx }) {
 // -----------------------------
 // Overlay
 // -----------------------------
-function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperChooser, setHelperChooser, onConfirmHelperChooser }) {
+function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const enabled = useChoreModeEnabled();
   const normalized0 = useMemo(() => normalizeChoresData(data), [data]);
   const normalized = useMemo(() => syncHelperExpiry(normalized0), [normalized0]);
@@ -917,6 +905,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
 
   const weekKey = useMemo(() => getWeekKey(baseDate || new Date()), [baseDate]);
   const doneMap = normalized.doneByWeek?.[weekKey] || {};
+  const ymd = useMemo(() => ymdFromDate(baseDate || new Date()), [baseDate]);
 
   const [parentPanelOpen, setParentPanelOpen] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState(null);
@@ -1103,7 +1092,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
       createdAt: Date.now(),
     };
 
-    console.log("[CHORES] add chore", chore);
     patch({
       ...normalized,
       people: nextPeople,
@@ -1177,7 +1165,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
       completedBy: [],
     };
 
-    console.log("[CHORES] add helper", task);
     patch({
       ...normalized,
       helperTasks: [...(normalized.helperTasks || []), task],
@@ -1208,25 +1195,24 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
     });
   };
 
-  const childCompleteHelper = (task) => {
-    const s = syncHelperExpiry(normalized);
-    const nowTask = (s.helperTasks || []).find((t) => t.id === task.id);
-    if (!nowTask || nowTask.status !== "active") return;
+  // Child: enable internet if daily chores complete (button)
+  const enableInternetForKidToday = async (kidPerson) => {
+    const { kidId, allDone } = getDailyCompletionState(normalized, baseDate || new Date(), kidPerson);
+    if (!kidId || !allDone) return;
 
-    const options = nowTask.assignedTo || [];
-    if (options.length <= 1) {
-      const next = awardHelperTask(ctx, s, nowTask, options);
-      patch(next);
-      return;
-    }
+    const minutesCfg = Number(normalized.settings?.internetMinutesOnDailyComplete?.[kidPerson] || 0) || 0;
+    if (minutesCfg <= 0) return;
 
-    setHelperChooser({ taskId: nowTask.id, options });
-  };
+    if (hasInternetGrantForDay(normalized, ymd, kidId)) return;
 
-  const confirmHelperChooser = (selectedKidIds) => {
-    if (onConfirmHelperChooser) {
-      onConfirmHelperChooser(selectedKidIds);
-    }
+    const next = recordInternetGrantForDay(normalized, ymd, kidId, minutesCfg);
+    patch(next);
+
+    await allowKidsInternet(ctx, {
+      minutes: minutesCfg,
+      kidId,
+      sourceRef: `daily:${ymd}:${kidId}:${minutesCfg}`,
+    });
   };
 
   if (!enabled) return null;
@@ -1243,7 +1229,9 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
                 </div>
                 <div>
                   <div className="text-white text-2xl font-bold">Chores</div>
-                  <div className="text-white/60 text-sm">Check chores • Week of {weekKey}</div>
+                  <div className="text-white/60 text-sm">
+                    Check chores • {newDay} • Week of {weekKey}
+                  </div>
                 </div>
               </div>
 
@@ -1266,13 +1254,11 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
               </div>
             </div>
 
-            {/* Main content grid - Left: Parent controls (if open), Right: Chores content */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
               {parentPanelOpen ? (
                 <div className="self-start bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
                   <ParentGate ctx={ctx} title="Parent tools" onCancel={() => setParentPanelOpen(false)}>
                     <div className="space-y-6">
-                      {/* Add weekly chore */}
                       <div>
                         <div className="text-white text-xl font-semibold mb-4">Add weekly chore</div>
 
@@ -1363,12 +1349,9 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
                         </div>
                       </div>
 
-                      {/* Helper task editor */}
                       <div>
                         <div className="text-white text-xl font-semibold mb-2">Daily Helper tasks</div>
-                        <div className="text-white/60 text-sm mb-4">
-                          One-off bonus tasks. Can expire.
-                        </div>
+                        <div className="text-white/60 text-sm mb-4">One-off bonus tasks. Can expire.</div>
 
                         <div className="space-y-4">
                           <div>
@@ -1409,9 +1392,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
                               />
                               Brady
                             </label>
-                            <div className="text-white/40 text-xs mt-2">
-                              If both are checked, completion can credit one or both.
-                            </div>
+                            <div className="text-white/40 text-xs mt-2">If both are checked, both get the rewards.</div>
                           </div>
 
                           <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
@@ -1448,7 +1429,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
                         </div>
                       </div>
 
-                      {/* Expired helpers */}
                       <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                         <div className="text-white font-semibold mb-2">Expired helpers</div>
                         {expiredHelpers.length ? (
@@ -1483,46 +1463,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
                         )}
                       </div>
 
-                      {/* Completed helpers */}
-                      <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                        <div className="text-white font-semibold mb-2">Completed helpers</div>
-                        {(normalized.helperTasks || []).filter((t) => t.status === "completed").length ? (
-                          <div className="space-y-2">
-                            {(normalized.helperTasks || [])
-                              .filter((t) => t.status === "completed")
-                              .map((t) => (
-                                <div key={t.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
-                                  <div className="text-white/90 text-sm font-semibold">{t.title}</div>
-                                  <div className="text-white/60 text-xs">
-                                    Completed by: {(t.completedBy || []).join(", ")}
-                                    {formatInlineReward(t.reward)}
-                                  </div>
-                                  <div className="mt-2 flex gap-2">
-                                    <button
-                                      onClick={() => {
-                                        const next = reverseHelperTaskIfCompleted(ctx, normalized, t.id);
-                                        patch(next);
-                                      }}
-                                      className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
-                                    >
-                                      Undo
-                                    </button>
-                                    <button
-                                      onClick={() => parentDeleteHelper(t.id)}
-                                      className="px-3 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-200/20 text-red-100 text-sm"
-                                    >
-                                      Delete
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                          </div>
-                        ) : (
-                          <div className="text-white/40 text-sm">None</div>
-                        )}
-                      </div>
-
-                      {/* Reset week - small button at bottom */}
                       <div className="pt-4 border-t border-white/10">
                         <button
                           onClick={parentResetWeekSafe}
@@ -1530,269 +1470,207 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone, helperC
                         >
                           Reset week (uncheck + reverse rewards)
                         </button>
-                        <div className="text-white/30 text-xs mt-2 text-center">
-                          Debit rewards granted this week
-                        </div>
+                        <div className="text-white/30 text-xs mt-2 text-center">Debit rewards granted this week</div>
                       </div>
                     </div>
                   </ParentGate>
                 </div>
               ) : null}
 
-              {/* Right column or full width: Chores content */}
               <div className={parentPanelOpen ? "" : "lg:col-span-2"}>
-              <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="text-white text-xl font-semibold">{newDay}</div>
-                  <div className="text-white/50 text-sm">Week of {weekKey}</div>
-                </div>
-
-                <div className="space-y-5">
-                  {todaysChores.length ? (
-                    people.map((person) => {
-                      const list = todaysChoresByPerson[person] || [];
-                      if (!list.length) return null;
-
-                      return (
-                        <div key={person} className="space-y-3">
-                          <div className="px-3 py-2 rounded-2xl bg-white/5 border border-white/10">
-                            <div className="text-white font-semibold">{person}</div>
-                          </div>
-
-                          <div className="space-y-3">
-                            {list.map((c) => {
-                              const done = !!doneMap[c.id];
-                              return (
-                                <div
-                                  key={c.id}
-                                  className={`flex items-center justify-between p-3 rounded-2xl transition-all ${
-                                    done ? "bg-white/5 opacity-80" : "bg-white/5 hover:bg-white/10"
-                                  }`}
-                                >
-                                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                                    <button
-                                      onClick={() => {
-                                        if (!done) {
-                                          setPendingConfirm({ type: "chore", weekKey, chore: c });
-                                        } else {
-                                          setParentPanelOpen(true);
-                                        }
-                                      }}
-                                      className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
-                                        done ? "bg-green-500 border-green-500" : "border-white/40 hover:border-white/70"
-                                      }`}
-                                      title={done ? "Done (parent required to uncheck)" : "Mark as done"}
-                                    >
-                                      {done ? <Check className="w-4 h-4 text-white" /> : null}
-                                    </button>
-
-                                    <div className="min-w-0">
-                                      <div className={`text-white font-medium truncate ${done ? "line-through" : ""}`}>
-                                        {c.name}
-                                        <span className="text-white/60 text-xs">{formatInlineReward(c.reward)}</span>
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  {parentPanelOpen ? (
-                                    <button
-                                      onClick={() => {
-                                        if (window.confirm("Delete this chore?")) {
-                                          parentRemoveChore(c.id);
-                                        }
-                                      }}
-                                      className="p-1.5 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 transition-all"
-                                      title="Delete chore"
-                                    >
-                                      <Trash2 className="w-4 h-4 text-white/60 hover:text-red-200" />
-                                    </button>
-                                  ) : null}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div className="text-white/40 text-center py-10">No chores for {newDay}.</div>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-6">
                 <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                  <div className="text-white text-xl font-semibold mb-1">Daily Helper</div>
-                  <div className="text-white/60 text-sm mb-4">One-off bonus tasks. Completing gives bonus time/points.</div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="text-white text-xl font-semibold">{newDay}</div>
+                    <div className="text-white/50 text-sm">Week of {weekKey}</div>
+                  </div>
 
-                  {activeHelpers.length ? (
-                    <div className="space-y-3">
-                      {activeHelpers.map((t) => (
-                        <div key={t.id} className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="text-white font-semibold truncate">{t.title}</div>
-                              <div className="text-white/60 text-xs mt-1">
-                                Assigned: {(t.assignedTo || []).join(", ")}
-                                {formatInlineReward(t.reward)}
-                              </div>
-                              {t.expiresAt ? (
-                                <div className="text-white/40 text-xs mt-1">
-                                  Expires: {new Date(t.expiresAt).toLocaleDateString()}
-                                </div>
+                  <div className="space-y-5">
+                    {todaysChores.length ? (
+                      people.map((person) => {
+                        const list = todaysChoresByPerson[person] || [];
+                        if (!list.length) return null;
+
+                        const daily = getDailyCompletionState(normalized, baseDate || new Date(), person);
+                        const kidId = daily.kidId;
+                        const internetMins = Number(normalized.settings?.internetMinutesOnDailyComplete?.[person] || 0) || 0;
+                        const canShowInternet =
+                          kidId && daily.allDone && internetMins > 0 && !hasInternetGrantForDay(normalized, ymd, kidId);
+
+                        return (
+                          <div key={person} className="space-y-3">
+                            <div className="px-3 py-2 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
+                              <div className="text-white font-semibold">{person}</div>
+
+                              {canShowInternet ? (
+                                <button
+                                  onClick={() => enableInternetForKidToday(person)}
+                                  className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-sm flex items-center gap-2"
+                                  title="Allow internet"
+                                >
+                                  <Wifi className="w-4 h-4" />
+                                  Enable internet ({internetMins}m)
+                                </button>
                               ) : null}
                             </div>
 
-                            <button
-                              onClick={() => setPendingConfirm({ type: "helper", task: t })}
-                              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
-                            >
-                              Complete
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-white/40 text-sm">No helper tasks right now.</div>
-                  )}
+                            <div className="space-y-3">
+                              {list.map((c) => {
+                                const done = !!doneMap[c.id];
+                                return (
+                                  <div
+                                    key={c.id}
+                                    className={`flex items-center justify-between p-3 rounded-2xl transition-all ${
+                                      done ? "bg-white/5 opacity-80" : "bg-white/5 hover:bg-white/10"
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                                      <button
+                                        onClick={() => {
+                                          if (!done) {
+                                            setPendingConfirm({ type: "chore", weekKey, chore: c });
+                                          } else {
+                                            setParentPanelOpen(true);
+                                          }
+                                        }}
+                                        className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
+                                          done ? "bg-green-500 border-green-500" : "border-white/40 hover:border-white/70"
+                                        }`}
+                                        title={done ? "Done (parent required to uncheck)" : "Mark as done"}
+                                      >
+                                        {done ? <Check className="w-4 h-4 text-white" /> : null}
+                                      </button>
 
-                  {expiredHelpers.length ? (
-                    <div className="mt-4 text-white/40 text-xs">
-                      {expiredHelpers.length} expired task(s). Parent can reactivate in Parent tools.
+                                      <div className="min-w-0">
+                                        <div className={`text-white font-medium truncate ${done ? "line-through" : ""}`}>
+                                          {c.name}
+                                          <span className="text-white/60 text-xs">{formatInlineReward(c.reward)}</span>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {parentPanelOpen ? (
+                                      <button
+                                        onClick={() => {
+                                          if (window.confirm("Delete this chore?")) {
+                                            parentRemoveChore(c.id);
+                                          }
+                                        }}
+                                        className="p-1.5 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 transition-all"
+                                        title="Delete chore"
+                                      >
+                                        <Trash2 className="w-4 h-4 text-white/60 hover:text-red-200" />
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="text-white/40 text-center py-10">No chores for {newDay}.</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-6 mt-6">
+                  <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
+                    <div className="text-white text-xl font-semibold mb-1">Daily Helper</div>
+                    <div className="text-white/60 text-sm mb-4">One-off bonus tasks. Completing gives bonus time/points.</div>
+
+                    {activeHelpers.length ? (
+                      <div className="space-y-3">
+                        {activeHelpers.map((t) => (
+                          <div key={t.id} className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-white font-semibold truncate">{t.title}</div>
+                                <div className="text-white/60 text-xs mt-1">
+                                  Assigned: {(t.assignedTo || []).join(", ")}
+                                  {formatInlineReward(t.reward)}
+                                </div>
+                                {t.expiresAt ? (
+                                  <div className="text-white/40 text-xs mt-1">
+                                    Expires: {new Date(t.expiresAt).toLocaleDateString()}
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              <button
+                                onClick={() => setPendingConfirm({ type: "helper", task: t })}
+                                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
+                              >
+                                Complete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-white/40 text-sm">No helper tasks right now.</div>
+                    )}
+
+                    {expiredHelpers.length ? (
+                      <div className="mt-4 text-white/40 text-xs">
+                        {expiredHelpers.length} expired task(s). Parent can reactivate in Parent tools.
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="text-center text-white/40 text-sm">
+                    Press <span className="text-white/60">ESC</span> to exit
+                  </div>
+
+                  {/* Optional emergency block button for parent (hidden unless parent panel open) */}
+                  {parentPanelOpen ? (
+                    <div className="text-center">
+                      <button
+                        onClick={() => blockKidsInternet(ctx, { sourceRef: `manual:${ymd}` })}
+                        className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                      >
+                        Block kids internet now
+                      </button>
                     </div>
                   ) : null}
                 </div>
-
-                <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                  <div className="text-white text-xl font-semibold mb-2">Weekly bonus</div>
-                  <div className="text-white/60 text-sm mb-4">
-                    If a child finishes <span className="text-white/80">all chores for the week</span>, they earn their bonus.
-                  </div>
-
-                  <div className="space-y-3 text-white/80 text-sm">
-                    {["Harvey", "Brady"].map((kid) => {
-                      const cfg = normalized.settings?.weeklyBonusByPerson?.[kid] || { minutes: 0, points: 0 };
-                      const granted = normalized.weeklyBonusGrantsByWeek?.[weekKey]?.[kid];
-                      return (
-                        <div key={kid} className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                          <div className="flex items-center justify-between">
-                            <div className="font-semibold text-white">{kid}</div>
-                            <div className="text-white/70 text-xs">
-                              Bonus: {Number(cfg.minutes || 0) || 0}m • {Number(cfg.points || 0) || 0}pt
-                            </div>
-                          </div>
-                          <div className="mt-2 text-white/60 text-xs">{granted ? "✅ Bonus granted" : "Not yet granted"}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="text-white/40 text-xs mt-4">Change bonus amounts in Settings (gear icon).</div>
-                </div>
-              </div>
               </div>
             </div>
 
-            <div className="mt-6 text-center text-white/40 text-sm">
-              Press <span className="text-white/60">ESC</span> to exit
-            </div>
+            {pendingConfirm ? (
+              <ConfirmCompleteModal
+                title="Confirm completion"
+                subtitle={pendingConfirm.type === "chore" ? pendingConfirm.chore.name : pendingConfirm.task.title}
+                details={
+                  pendingConfirm.type === "chore"
+                    ? `Assigned to: ${pendingConfirm.chore.person}`
+                    : `Assigned to: ${(pendingConfirm.task.assignedTo || []).join(", ")}`
+                }
+                onCancel={() => setPendingConfirm(null)}
+                onConfirm={() => {
+                  if (pendingConfirm.type === "chore") {
+                    onChildMarkDone(pendingConfirm.weekKey, pendingConfirm.chore);
+                    setPendingConfirm(null);
+                  } else if (pendingConfirm.type === "helper") {
+                    const s = syncHelperExpiry(normalized);
+                    const nowTask = (s.helperTasks || []).find((t) => t.id === pendingConfirm.task.id);
+                    if (nowTask && nowTask.status === "active") {
+                      const options = nowTask.assignedTo || [];
+                      const next = awardHelperTask(ctx, s, nowTask, options);
+                      patch(next);
+                    }
+                    setPendingConfirm(null);
+                  }
+                }}
+              />
+            ) : null}
           </div>
         </div>
       </div>
-
-      {pendingConfirm ? (
-        <ConfirmCompleteModal
-          title="Confirm completion"
-          subtitle={
-            pendingConfirm.type === "chore"
-              ? pendingConfirm.chore.name
-              : pendingConfirm.task.title
-          }
-          details={
-            pendingConfirm.type === "chore"
-              ? `Assigned to: ${pendingConfirm.chore.person}`
-              : `Assigned to: ${(pendingConfirm.task.assignedTo || []).join(", ")}`
-          }
-          onCancel={() => setPendingConfirm(null)}
-          onConfirm={() => {
-            if (pendingConfirm.type === "chore") {
-              onChildMarkDone(pendingConfirm.weekKey, pendingConfirm.chore);
-              setPendingConfirm(null);
-            } else if (pendingConfirm.type === "helper") {
-              const s = syncHelperExpiry(normalized);
-              const nowTask = (s.helperTasks || []).find((t) => t.id === pendingConfirm.task.id);
-              if (nowTask && nowTask.status === "active") {
-                const options = nowTask.assignedTo || [];
-                if (options.length <= 1) {
-                  const next = awardHelperTask(ctx, s, nowTask, options);
-                  patch(next);
-                } else {
-                  setHelperChooser({ taskId: nowTask.id, options });
-                }
-              }
-              setPendingConfirm(null);
-            }
-          }}
-        />
-      ) : null}
     </div>
   );
 
   return createPortal(overlayContent, document.body);
-}
-
-function HelperChooserModal({ task, options, onCancel, onConfirm }) {
-  const [selHarvey, setSelHarvey] = useState(options.includes("harvey"));
-  const [selBrady, setSelBrady] = useState(options.includes("brady"));
-
-  return createPortal(
-    <div className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="max-w-md w-full rounded-3xl bg-white/10 border border-white/20 p-5">
-        <div className="text-white text-lg font-semibold">Who completed it?</div>
-        <div className="text-white/70 text-sm mt-1">{task?.title || ""}</div>
-
-        <div className="mt-4 space-y-2">
-          {options.includes("harvey") ? (
-            <label className="flex items-center gap-2 text-white/90 text-sm">
-              <input type="checkbox" checked={selHarvey} onChange={(e) => setSelHarvey(e.target.checked)} />
-              Harvey
-            </label>
-          ) : null}
-          {options.includes("brady") ? (
-            <label className="flex items-center gap-2 text-white/90 text-sm">
-              <input type="checkbox" checked={selBrady} onChange={(e) => setSelBrady(e.target.checked)} />
-              Brady
-            </label>
-          ) : null}
-        </div>
-
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 text-sm"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => {
-              const kids = [];
-              if (selHarvey) kids.push("harvey");
-              if (selBrady) kids.push("brady");
-              if (!kids.length) return;
-              onConfirm(kids);
-            }}
-            className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-sm"
-          >
-            Confirm
-          </button>
-        </div>
-
-        <div className="text-white/40 text-xs mt-3">If you pick both, both get the rewards.</div>
-      </div>
-    </div>,
-    document.body
-  );
 }
 
 function ConfirmCompleteModal({ title, subtitle, details, onCancel, onConfirm }) {
@@ -1857,73 +1735,112 @@ function SettingsOverlay({ ctx, open, onClose, data, patch }) {
             </div>
 
             <ParentGate ctx={ctx} title="Settings" onCancel={onClose}>
-              <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                <div className="text-white text-xl font-semibold mb-2">Weekly bonus rewards</div>
-                <div className="text-white/60 text-sm mb-5">
-                  When a child completes <span className="text-white/80">all their chores</span> for the week, grant this bonus.
+              <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl space-y-6">
+                <div>
+                  <div className="text-white text-xl font-semibold mb-2">Weekly bonus rewards</div>
+                  <div className="text-white/60 text-sm mb-5">
+                    When a child completes <span className="text-white/80">all their chores</span> for the week, grant this bonus.
+                  </div>
+
+                  {["Harvey", "Brady"].map((kid) => {
+                    const cfg = normalized.settings?.weeklyBonusByPerson?.[kid] || { minutes: 0, points: 0 };
+                    return (
+                      <div key={kid} className="rounded-2xl bg-white/5 border border-white/10 p-4 mb-3">
+                        <div className="text-white font-semibold mb-3">{kid}</div>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Minutes</label>
+                            <input
+                              type="number"
+                              value={Number(cfg.minutes || 0) || 0}
+                              onChange={(e) => {
+                                const v = Number(e.target.value || 0) || 0;
+                                patch({
+                                  ...normalized,
+                                  settings: {
+                                    ...(normalized.settings || {}),
+                                    weeklyBonusByPerson: {
+                                      ...(normalized.settings?.weeklyBonusByPerson || {}),
+                                      [kid]: { ...(cfg || {}), minutes: v },
+                                    },
+                                  },
+                                });
+                              }}
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Points</label>
+                            <input
+                              type="number"
+                              value={Number(cfg.points || 0) || 0}
+                              onChange={(e) => {
+                                const v = Number(e.target.value || 0) || 0;
+                                patch({
+                                  ...normalized,
+                                  settings: {
+                                    ...(normalized.settings || {}),
+                                    weeklyBonusByPerson: {
+                                      ...(normalized.settings?.weeklyBonusByPerson || {}),
+                                      [kid]: { ...(cfg || {}), points: v },
+                                    },
+                                  },
+                                });
+                              }}
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="text-white/40 text-xs mt-3">Set either to 0 if you don’t want that reward type.</div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                {["Harvey", "Brady"].map((kid) => {
-                  const cfg = normalized.settings?.weeklyBonusByPerson?.[kid] || { minutes: 0, points: 0 };
-                  return (
-                    <div key={kid} className="rounded-2xl bg-white/5 border border-white/10 p-4 mb-3">
-                      <div className="text-white font-semibold mb-3">{kid}</div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <label className="text-white/70 text-sm mb-2 block">Minutes</label>
-                          <input
-                            type="number"
-                            value={Number(cfg.minutes || 0) || 0}
-                            onChange={(e) => {
-                              const v = Number(e.target.value || 0) || 0;
-                              patch({
-                                ...normalized,
-                                settings: {
-                                  ...(normalized.settings || {}),
-                                  weeklyBonusByPerson: {
-                                    ...(normalized.settings?.weeklyBonusByPerson || {}),
-                                    [kid]: { ...(cfg || {}), minutes: v },
-                                  },
-                                },
-                              });
-                            }}
-                            className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                          />
-                        </div>
+                <div className="border-t border-white/10 pt-6">
+                  <div className="text-white text-xl font-semibold mb-2">Internet unlock (daily)</div>
+                  <div className="text-white/60 text-sm mb-4">
+                    When a kid finishes <span className="text-white/80">all chores for the day</span>, show an “Enable internet” button for this many minutes.
+                  </div>
 
-                        <div>
-                          <label className="text-white/70 text-sm mb-2 block">Points</label>
-                          <input
-                            type="number"
-                            value={Number(cfg.points || 0) || 0}
-                            onChange={(e) => {
-                              const v = Number(e.target.value || 0) || 0;
-                              patch({
-                                ...normalized,
-                                settings: {
-                                  ...(normalized.settings || {}),
-                                  weeklyBonusByPerson: {
-                                    ...(normalized.settings?.weeklyBonusByPerson || {}),
-                                    [kid]: { ...(cfg || {}), points: v },
-                                  },
+                  {["Harvey", "Brady"].map((kid) => {
+                    const cur = Number(normalized.settings?.internetMinutesOnDailyComplete?.[kid] || 0) || 0;
+                    return (
+                      <div key={kid} className="rounded-2xl bg-white/5 border border-white/10 p-4 mb-3">
+                        <div className="text-white font-semibold mb-2">{kid}</div>
+                        <label className="text-white/70 text-sm mb-2 block">Minutes</label>
+                        <input
+                          type="number"
+                          value={cur}
+                          onChange={(e) => {
+                            const v = Number(e.target.value || 0) || 0;
+                            patch({
+                              ...normalized,
+                              settings: {
+                                ...(normalized.settings || {}),
+                                internetMinutesOnDailyComplete: {
+                                  ...(normalized.settings?.internetMinutesOnDailyComplete || {}),
+                                  [kid]: v,
                                 },
-                              });
-                            }}
-                            className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                          />
+                              },
+                            });
+                          }}
+                          className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                        />
+                        <div className="text-white/40 text-xs mt-2">
+                          This button triggers <code className="text-white/70">POST /api/v1/network/kids/off</code>.
                         </div>
                       </div>
+                    );
+                  })}
+                </div>
 
-                      <div className="text-white/40 text-xs mt-3">Set either to 0 if you don’t want that reward type.</div>
-                    </div>
-                  );
-                })}
-
-                <div className="mt-4 rounded-2xl bg-white/5 border border-white/10 p-4">
-                  <div className="text-white font-semibold">Chore editing moved</div>
+                <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                  <div className="text-white font-semibold">Note</div>
                   <div className="text-white/60 text-sm mt-1">
-                    Adding/removing chores and unchecking is available in the Chores overlay under{" "}
-                    <span className="text-white/80">Parent</span>.
+                    This module does not poll status. It only sends the “on/off” action.
                   </div>
                 </div>
               </div>
