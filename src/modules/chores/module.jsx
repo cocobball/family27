@@ -170,7 +170,17 @@ async function allowKidsInternet(ctx, { minutes = 0, kidId = null, sourceRef = "
 
   // Direct API
   try {
-    await fetch("/api/v1/network/kids/off", { method: "POST" });
+    const payload = { sourceModule: "chores", action: "off", minutes: Number(minutes) || 0, kidId: kidId || null, sourceRef: sourceRef || "" };
+    console.log("[CHORES] POST /api/v1/network/kids/off", payload);
+    const res = await fetch("/api/v1/network/kids/off", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    console.log("[CHORES] kids/off =>", res.status, text);
+    if (!res.ok) throw new Error(`${res.status} ${text}`);
   } catch (e) {
     console.warn("[CHORES] allowKidsInternet fetch failed", e);
   }
@@ -180,7 +190,17 @@ async function blockKidsInternet(ctx, { sourceRef = "" } = {}) {
   const bus = getBus(ctx);
   bus?.emit?.("NETWORK/KIDS/ON", { sourceModule: "chores", sourceRef: sourceRef || "", at: Date.now() });
   try {
-    await fetch("/api/v1/network/kids/on", { method: "POST" });
+    const payload = { sourceModule: "chores", action: "on", sourceRef: sourceRef || "" };
+    console.log("[CHORES] POST /api/v1/network/kids/on", payload);
+    const res = await fetch("/api/v1/network/kids/on", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    console.log("[CHORES] kids/on =>", res.status, text);
+    if (!res.ok) throw new Error(`${res.status} ${text}`);
   } catch (e) {
     console.warn("[CHORES] blockKidsInternet fetch failed", e);
   }
