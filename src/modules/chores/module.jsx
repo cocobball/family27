@@ -249,14 +249,7 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
     return () => unsub?.();
   }, [ctx]);
 
-  useEffect(() => {
-    if (!localUnlocked) return;
-    const timer = setTimeout(() => {
-      if (isParentUnlocked(rewardsData)) return;
-      setLocalUnlocked(false);
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [localUnlocked, rewardsData]);
+  // Keep localUnlocked for the session; do not auto-lock when data updates.
 
   const unlocked = localUnlocked || isParentUnlocked(rewardsData);
   if (unlocked) return children;
@@ -881,7 +874,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const [newName, setNewName] = useState("");
   const [newPerson, setNewPerson] = useState(PEOPLE_DEFAULTS[0]);
   const [newPersonCustom, setNewPersonCustom] = useState("");
-  const [newDay, setNewDay] = useState(() => getDayName(baseDate || new Date()));
+  const [newDays, setNewDays] = useState(() => [getDayName(baseDate || new Date())]);
 
   // Parent settings: game time minutes per kid
   const [gameTimeHarvey, setGameTimeHarvey] = useState(
@@ -902,7 +895,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   useEffect(() => {
     if (!enabled) return;
     const dayName = getDayName(baseDate || new Date());
-    setNewDay(dayName);
+    setNewDays([dayName]);
   }, [enabled, weekKey, baseDate]);
 
   useEffect(() => {
@@ -920,7 +913,8 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [enabled]);
 
-  const todaysChores = useMemo(() => chores.filter((c) => c.day === newDay), [chores, newDay]);
+  const selectedDayForView = (newDays && newDays.length && newDays[0]) || getDayName(baseDate || new Date());
+  const todaysChores = useMemo(() => chores.filter((c) => c.day === selectedDayForView), [chores, newDays]);
   const todaysChoresByPerson = useMemo(() => groupChoresByPerson(todaysChores, people), [todaysChores, people]);
 
   const activeHelpers = useMemo(
@@ -947,18 +941,20 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
       if (!nextPeople.includes(custom)) nextPeople = [...nextPeople, custom];
     }
 
-    const chore = {
+    const now = Date.now();
+
+    const newChores = (newDays || []).map((d) => ({
       id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      day: newDay,
+      day: d,
       person,
       name,
-      createdAt: Date.now(),
-    };
+      createdAt: now,
+    }));
 
     patch({
       ...normalized,
       people: nextPeople,
-      chores: [...(normalized.chores || []), chore],
+      chores: [...(normalized.chores || []), ...newChores],
     });
 
     setNewName("");
@@ -1079,7 +1075,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                 <div>
                   <div className="text-white text-2xl font-bold">Chores</div>
                   <div className="text-white/60 text-sm">
-                    Check chores • {newDay} • Week of {weekKey}
+                    Check chores • {selectedDayForView} • Week of {weekKey}
                   </div>
                 </div>
               </div>
@@ -1157,17 +1153,45 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                         <div className="space-y-4">
                           <div>
                             <label className="text-white/70 text-sm mb-2 block">Day</label>
-                            <select
-                              value={newDay}
-                              onChange={(e) => setNewDay(e.target.value)}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                            >
+
+                            <div className="mb-2 flex gap-2">
+                              <button
+                                onClick={() => setNewDays(DAYS.slice(0, 5))}
+                                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                              >
+                                Weekdays
+                              </button>
+                              <button
+                                onClick={() => setNewDays(DAYS)}
+                                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                              >
+                                All days
+                              </button>
+                              <button
+                                onClick={() => setNewDays([getDayName(baseDate || new Date())])}
+                                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                              >
+                                Today only
+                              </button>
+                            </div>
+
+                            <div className="rounded-2xl bg-white/5 border border-white/10 p-3 grid grid-cols-2 gap-2">
                               {DAYS.map((d) => (
-                                <option key={d} value={d} className="bg-slate-900 text-white">
+                                <label key={d} className="flex items-center gap-2 text-white/80 text-sm">
+                                  <input
+                                    type="checkbox"
+                                    checked={Array.isArray(newDays) && newDays.includes(d)}
+                                    onChange={() => {
+                                      const prev = new Set(newDays || []);
+                                      if (prev.has(d)) prev.delete(d);
+                                      else prev.add(d);
+                                      setNewDays(DAYS.filter((day) => prev.has(day)));
+                                    }}
+                                  />
                                   {d}
-                                </option>
+                                </label>
                               ))}
-                            </select>
+                            </div>
                           </div>
 
                           <div>
@@ -1351,7 +1375,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
               <div className={parentPanelOpen ? "" : "lg:col-span-2"}>
                 <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
                   <div className="flex items-center justify-between mb-4">
-                    <div className="text-white text-xl font-semibold">{newDay}</div>
+                    <div className="text-white text-xl font-semibold">{selectedDayForView}</div>
                     <div className="text-white/50 text-sm">Week of {weekKey}</div>
                   </div>
 
@@ -1420,7 +1444,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                         );
                       })
                     ) : (
-                      <div className="text-white/40 text-center py-10">No chores for {newDay}.</div>
+                      <div className="text-white/40 text-center py-10">No chores for {selectedDayForView}.</div>
                     )}
                   </div>
                 </div>
