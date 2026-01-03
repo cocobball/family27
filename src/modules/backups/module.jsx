@@ -7,7 +7,7 @@ import { formatBytes, formatDateTime, isValidBackupFilename } from "./helpers.js
 // --- ParentGate copy (local only; no dependency on chores module) ---
 import { getRewardsData, unlockParent, isParentUnlocked, defaultRewardsData } from "../rewards/helpers.js";
 
-function ParentGateLocal({ ctx, title = "Parent", children, onCancel }) {
+function ParentGateLocal({ ctx, title = "Parent", children, onCancel, onUnlocked }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [localUnlocked, setLocalUnlocked] = useState(false);
@@ -38,6 +38,9 @@ function ParentGateLocal({ ctx, title = "Parent", children, onCancel }) {
     setErr("");
     setLocalUnlocked(true);
     setRev((r) => r + 1);
+    try {
+      onUnlocked?.();
+    } catch {}
   };
 
   return (
@@ -130,15 +133,76 @@ function ConfirmRestoreModal({ filename, onCancel, onConfirm, busy, err }) {
   );
 }
 
+// --- Confirm modal (type DELETE) ---
+function ConfirmDeleteModal({ filename, onCancel, onConfirm, busy, err }) {
+  const [typed, setTyped] = useState("");
+  const ok = typed.trim().toUpperCase() === "DELETE";
+
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="max-w-lg w-full rounded-3xl bg-white/10 border border-white/20 p-5">
+        <div className="text-white text-lg font-semibold flex items-center gap-2">
+          <AlertTriangle className="w-5 h-5 text-yellow-200" />
+          Delete backup?
+        </div>
+
+        <div className="text-white/70 text-sm mt-2">
+          This will permanently delete the backup file:
+          <div className="mt-2 p-3 rounded-2xl bg-white/5 border border-white/10 text-white/90 font-mono text-xs">
+            {filename}
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="text-white/70 text-sm mb-2">Type <span className="text-white font-semibold">DELETE</span> to confirm</div>
+          <input
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder="DELETE"
+            className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+          />
+        </div>
+
+        {err ? <div className="text-red-200 text-sm mt-3">{err}</div> : null}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 text-sm disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => ok && onConfirm()}
+            disabled={!ok || busy}
+            className="px-3 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-200/20 text-red-100 text-sm disabled:opacity-50"
+          >
+            {busy ? "Deleting..." : "Confirm delete"}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 export default function BackupsModule({ ctx }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [payload, setPayload] = useState(null); // {summary, backups}
   const [parentOpen, setParentOpen] = useState(false);
+  const [runPending, setRunPending] = useState(false);
+  const [runBusy, setRunBusy] = useState(false);
+  const [runErr, setRunErr] = useState("");
 
   const [confirming, setConfirming] = useState(null); // filename
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreErr, setRestoreErr] = useState("");
+  const [deletePending, setDeletePending] = useState(null);
+  const [deleteConfirming, setDeleteConfirming] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
 
   const fetchList = async () => {
     setLoading(true);
@@ -165,6 +229,27 @@ export default function BackupsModule({ ctx }) {
       setErr(e?.message || "Failed to load backups");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const startRun = async () => {
+    setRunBusy(true);
+    setRunErr("");
+    try {
+      const r = await fetch("/api/v1/backups/run", { method: "POST" });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || j?.ok === false) throw new Error(j?.error || `HTTP ${r.status}`);
+      alert("Backup started");
+      await new Promise((res) => setTimeout(res, 1500));
+      fetchList();
+    } catch (e) {
+      const msg = e?.message || "Failed to start backup";
+      setRunErr(msg);
+      alert("Backup failed: " + msg);
+    } finally {
+      setRunBusy(false);
+      setParentOpen(false);
+      setRunPending(false);
     }
   };
 
@@ -196,6 +281,28 @@ export default function BackupsModule({ ctx }) {
       setRestoreErr(e?.message || "Failed to start restore");
     } finally {
       setRestoreBusy(false);
+    }
+  };
+
+  const startDelete = async (filename) => {
+    setDeleteBusy(true);
+    setDeleteErr("");
+    try {
+      const url = `/api/v1/backups/${encodeURIComponent(filename)}`;
+      const r = await fetch(url, { method: "DELETE" });
+      const j = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      alert("Backup deleted");
+      setDeleteConfirming(null);
+      setParentOpen(false);
+      await fetchList();
+    } catch (e) {
+      const msg = e?.message || "Failed to delete backup";
+      setDeleteErr(msg);
+      alert("Delete failed: " + msg);
+    } finally {
+      setDeleteBusy(false);
+      setDeletePending(null);
     }
   };
 
@@ -247,9 +354,33 @@ export default function BackupsModule({ ctx }) {
 
         {parentOpen ? (
           <div className="rounded-3xl bg-white/5 border border-white/15 p-4">
-            <ParentGateLocal ctx={ctx} title="Restore backups" onCancel={() => setParentOpen(false)}>
+            <ParentGateLocal
+              ctx={ctx}
+              title="Restore backups"
+              onCancel={() => setParentOpen(false)}
+              onUnlocked={() => {
+                if (runPending) {
+                  setRunPending(false);
+                  startRun();
+                }
+                if (deletePending) {
+                  setDeletePending(null);
+                  setDeleteConfirming(deletePending);
+                }
+              }}
+            >
               <div className="text-white/70 text-sm">
                 Restore is enabled below. Pick a backup row and click <span className="text-white/90 font-semibold">Restore</span>.
+              </div>
+              <div className="mt-3">
+                <button
+                  onClick={() => startRun()}
+                  disabled={runBusy}
+                  className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white/90 text-sm"
+                >
+                  {runBusy ? "Running backup..." : "Run backup now"}
+                </button>
+                {runErr ? <div className="text-red-200 text-sm mt-2">{runErr}</div> : null}
               </div>
             </ParentGateLocal>
           </div>
@@ -267,6 +398,7 @@ export default function BackupsModule({ ctx }) {
               {backups.map((b) => {
                 const filename = b?.filename || "";
                 const canRestore = parentOpen && isValidBackupFilename(filename);
+                const canDelete = parentOpen && isValidBackupFilename(filename);
 
                 return (
                   <div key={filename} className="rounded-xl bg-white/5 border border-white/10 p-3 flex items-center gap-3">
@@ -286,6 +418,27 @@ export default function BackupsModule({ ctx }) {
                     >
                       Restore
                     </button>
+                    <button
+                      onClick={() => {
+                        if (!parentOpen) {
+                          setDeletePending(filename);
+                          setParentOpen(true);
+                          return;
+                        }
+                        // parentOpen true -> if parent unlocked, show confirm
+                        const rewards = getRewardsData(ctx);
+                        if (isParentUnlocked(rewards)) {
+                          setDeleteConfirming(filename);
+                        } else {
+                          setDeletePending(filename);
+                        }
+                      }}
+                      disabled={!canDelete}
+                      className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white/90 text-sm disabled:opacity-40"
+                      title={parentOpen ? "Delete this backup" : "Open Parent to enable delete"}
+                    >
+                      Delete
+                    </button>
                   </div>
                 );
               })}
@@ -304,6 +457,18 @@ export default function BackupsModule({ ctx }) {
             setRestoreErr("");
           }}
           onConfirm={() => startRestore(confirming)}
+        />
+      ) : null}
+      {deleteConfirming ? (
+        <ConfirmDeleteModal
+          filename={deleteConfirming}
+          busy={deleteBusy}
+          err={deleteErr}
+          onCancel={() => {
+            if (!deleteBusy) setDeleteConfirming(null);
+            setDeleteErr("");
+          }}
+          onConfirm={() => startDelete(deleteConfirming)}
         />
       ) : null}
     </div>
