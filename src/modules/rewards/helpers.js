@@ -326,6 +326,7 @@ export async function redeemMinutes(ctx, kidId, minutes, target = null) {
 
   const mins = Math.max(0, Math.floor(Number(minutes) || 0));
   if (mins <= 0) return { ok: false, error: "Minutes must be positive" };
+  if (mins > 120) return { ok: false, error: "Max redeem is 120 minutes" };
   if (!["harvey", "brady"].includes(kidId)) return { ok: false, error: "Unknown kidId" };
   if ((data.wallets?.[kidId]?.minutes || 0) < mins) return { ok: false, error: "Insufficient minutes" };
 
@@ -467,4 +468,66 @@ export async function tickSessions(ctx) {
   }
 
   return changed;
+}
+
+/**
+ * Parent-only admin actions
+ */
+
+export function clearRewardsLedger(ctx) {
+  const data = getRewardsData(ctx);
+  data.ledger = [];
+  saveRewardsData(ctx, data);
+  return { ok: true };
+}
+
+export function clearRewardsPoints(ctx) {
+  const data = getRewardsData(ctx);
+  data.wallets.harvey.points = 0;
+  data.wallets.brady.points = 0;
+  saveRewardsData(ctx, data);
+  return { ok: true };
+}
+
+export function adjustRewardsPoints(ctx, { kidId, delta, sourceRef, reason }) {
+  if (!["harvey", "brady"].includes(kidId)) {
+    return { ok: false, error: "Unknown kidId" };
+  }
+  
+  const deltaNum = Math.floor(Number(delta) || 0);
+  if (deltaNum === 0) return { ok: false, error: "Delta must be non-zero" };
+  
+  if (!sourceRef) {
+    return { ok: false, error: "sourceRef required" };
+  }
+
+  if (deltaNum > 0) {
+    // credit
+    return creditRewards(ctx, {
+      kidId,
+      currency: "points",
+      amount: deltaNum,
+      sourceModule: "rewards-admin",
+      sourceRef,
+      reason: reason || "Parent points adjustment",
+      metadata: {},
+    });
+  } else {
+    // debit
+    return debitRewards(ctx, {
+      kidId,
+      currency: "points",
+      amount: Math.abs(deltaNum),
+      sourceModule: "rewards-admin",
+      sourceRef,
+      reason: reason || "Parent points adjustment",
+      metadata: {},
+    });
+  }
+}
+
+export function resetRewardsModule(ctx) {
+  const fresh = defaultRewardsData();
+  saveRewardsData(ctx, fresh);
+  return { ok: true };
 }

@@ -10,6 +10,10 @@ import {
   getRewardsData,
   unlockParent,
   lockParent,
+  clearRewardsLedger,
+  clearRewardsPoints,
+  adjustRewardsPoints,
+  resetRewardsModule,
 } from "./helpers.js";
 
 function fmtRemainingMs(ms) {
@@ -82,6 +86,10 @@ export default function RewardsModule({ ctx }) {
   const [amount, setAmount] = useState(10);
   const [reason, setReason] = useState("Manual credit");
 
+  // Parent admin controls
+  const [adminKidId, setAdminKidId] = useState("harvey");
+  const [pointsDelta, setPointsDelta] = useState(0);
+
   // Listen for events + run session ticker
   useEffect(() => {
     const offCredit = ctx.eventBus.on("REWARDS/CREDIT", (payload) => {
@@ -131,92 +139,213 @@ export default function RewardsModule({ ctx }) {
             >
               Lock now
             </button>
-          ) : null}
+          ) : (
+            <button
+              style={S.btn(false)}
+              onClick={() => {
+                const pwd = prompt("Parent password:");
+                if (!pwd) return;
+                const ok = unlockParent(ctx, pwd, 5);
+                if (!ok) {
+                  alert("Incorrect password");
+                  return;
+                }
+                rerender((x) => x + 1);
+              }}
+            >
+              Unlock
+            </button>
+          )}
         </div>
       </div>
 
       {/* Manual credit (parent-locked) */}
-      <div style={{ ...S.card, marginTop: 12, marginBottom: 16 }}>
-        <div style={{ fontWeight: 800, marginBottom: 10 }}>
-          Manual credit (Parent required)
-        </div>
-
-        <div style={{ display: "grid", gap: 12 }}>
-          <div>
-            <div style={S.label}>Kid</div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button style={S.btn(kidId === "harvey")} onClick={() => setKidId("harvey")}>
-                Harvey
-              </button>
-              <button style={S.btn(kidId === "brady")} onClick={() => setKidId("brady")}>
-                Brady
-              </button>
-            </div>
+      {parentUnlocked ? (
+        <div style={{ ...S.card, marginTop: 12, marginBottom: 16 }}>
+          <div style={{ fontWeight: 800, marginBottom: 10 }}>
+            Manual credit (Parent required)
           </div>
 
-          <div>
-            <div style={S.label}>Currency</div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button style={S.btn(currency === "minutes")} onClick={() => setCurrency("minutes")}>
-                Minutes
-              </button>
-              <button style={S.btn(currency === "points")} onClick={() => setCurrency("points")}>
-                Points
-              </button>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "end" }}>
-            <div style={{ minWidth: 140 }}>
-              <div style={S.label}>Amount</div>
-              <input
-                type="number"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                style={{ ...S.input, width: "100%" }}
-              />
+          <div style={{ display: "grid", gap: 12 }}>
+            <div>
+              <div style={S.label}>Kid</div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button style={S.btn(kidId === "harvey")} onClick={() => setKidId("harvey")}>
+                  Harvey
+                </button>
+                <button style={S.btn(kidId === "brady")} onClick={() => setKidId("brady")}>
+                  Brady
+                </button>
+              </div>
             </div>
 
-            <div style={{ flex: 1, minWidth: 220 }}>
-              <div style={S.label}>Reason</div>
-              <input
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                style={{ ...S.input, width: "100%" }}
-              />
+            <div>
+              <div style={S.label}>Currency</div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button style={S.btn(currency === "minutes")} onClick={() => setCurrency("minutes")}>
+                  Minutes
+                </button>
+                <button style={S.btn(currency === "points")} onClick={() => setCurrency("points")}>
+                  Points
+                </button>
+              </div>
             </div>
 
-            <button
-              style={S.btn(false)}
-              onClick={() => {
-                if (!parentUnlocked) {
-                  const pwd = prompt("Parent password required to add rewards:");
-                  if (!pwd) return;
-                  const ok = unlockParent(ctx, pwd, 5);
-                  if (!ok) {
-                    alert("Incorrect password");
-                    return;
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "end" }}>
+              <div style={{ minWidth: 140 }}>
+                <div style={S.label}>Amount</div>
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  style={{ ...S.input, width: "100%" }}
+                />
+              </div>
+
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={S.label}>Reason</div>
+                <input
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  style={{ ...S.input, width: "100%" }}
+                />
+              </div>
+
+              <button
+                style={S.btn(false)}
+                onClick={() => {
+                  if (!parentUnlocked) {
+                    const pwd = prompt("Parent password required to add rewards:");
+                    if (!pwd) return;
+                    const ok = unlockParent(ctx, pwd, 5);
+                    if (!ok) {
+                      alert("Incorrect password");
+                      return;
+                    }
                   }
-                }
 
-                const sourceRef = `manual:${Date.now()}`;
-                ctx.eventBus.emit("REWARDS/CREDIT", {
-                  kidId,
-                  currency,
-                  amount: Number(amount),
-                  sourceModule: "manual",
-                  sourceRef,
-                  reason,
-                });
+                  const sourceRef = `manual:${Date.now()}`;
+                  ctx.eventBus.emit("REWARDS/CREDIT", {
+                    kidId,
+                    currency,
+                    amount: Number(amount),
+                    sourceModule: "manual",
+                    sourceRef,
+                    reason,
+                  });
 
-                rerender((x) => x + 1);
-              }}
-            >
-              Credit
-            </button>
+                  rerender((x) => x + 1);
+                }}
+              >
+                Credit
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
+
+      {/* Parent Admin */}
+      {parentUnlocked ? (
+        <div style={{ ...S.card, marginBottom: 16 }}>
+          <div style={{ fontWeight: 800, marginBottom: 10 }}>
+            Parent Admin
+          </div>
+
+          <div style={{ display: "grid", gap: 12 }}>
+            <div>
+              <div style={S.label}>Adjust Points</div>
+              <div style={{ display: "flex", gap: 10, alignItems: "end", flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ ...S.label, fontSize: 11 }}>Kid</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={S.btnSmall} onClick={() => setAdminKidId("harvey")}>
+                      {adminKidId === "harvey" ? "✓ " : ""}Harvey
+                    </button>
+                    <button style={S.btnSmall} onClick={() => setAdminKidId("brady")}>
+                      {adminKidId === "brady" ? "✓ " : ""}Brady
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ minWidth: 120 }}>
+                  <div style={{ ...S.label, fontSize: 11 }}>Delta (+/-)</div>
+                  <input
+                    type="number"
+                    value={pointsDelta}
+                    onChange={(e) => setPointsDelta(e.target.value)}
+                    placeholder="e.g. 10 or -5"
+                    style={{ ...S.input, width: "100%" }}
+                  />
+                </div>
+
+                <button
+                  style={S.btn(false)}
+                  onClick={() => {
+                    const delta = Number(pointsDelta) || 0;
+                    if (delta === 0) {
+                      alert("Delta must be non-zero");
+                      return;
+                    }
+                    const res = adjustRewardsPoints(ctx, {
+                      kidId: adminKidId,
+                      delta,
+                      sourceRef: `points_adjust:${Date.now()}`,
+                      reason: `Parent adjusted points by ${delta}`,
+                    });
+                    if (!res.ok) {
+                      alert(res.error || "Failed");
+                    } else {
+                      setPointsDelta(0);
+                      rerender((x) => x + 1);
+                    }
+                  }}
+                >
+                  Apply points change
+                </button>
+              </div>
+            </div>
+
+            <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 12 }}>
+              <div style={{ ...S.label, marginBottom: 8 }}>Destructive Actions</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  style={S.btnDanger}
+                  onClick={() => {
+                    if (!window.confirm("Clear entire ledger (transaction history)? This cannot be undone.")) return;
+                    clearRewardsLedger(ctx);
+                    rerender((x) => x + 1);
+                  }}
+                >
+                  Clear ledger
+                </button>
+
+                <button
+                  style={S.btnDanger}
+                  onClick={() => {
+                    if (!window.confirm("Set both kids' points to 0? This cannot be undone.")) return;
+                    clearRewardsPoints(ctx);
+                    rerender((x) => x + 1);
+                  }}
+                >
+                  Clear all points
+                </button>
+
+                <button
+                  style={S.btnDanger}
+                  onClick={() => {
+                    if (!window.confirm("Reset entire Rewards module to defaults (balances + ledger + sessions)?\n\nThis CANNOT be undone!")) return;
+                    if (!window.confirm("Are you SURE? All data will be lost.")) return;
+                    resetRewardsModule(ctx);
+                    rerender((x) => x + 1);
+                  }}
+                >
+                  Reset rewards data
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Balances / Game time sessions */}
       <h3 style={{ margin: "0 0 10px 0" }}>Balances / Game time</h3>
@@ -311,6 +440,18 @@ export default function RewardsModule({ ctx }) {
                       >
                         Redeem 60
                       </button>
+                      {w.minutes >= 120 ? (
+                        <button
+                          style={S.btn(false)}
+                          onClick={async () => {
+                            const res = await redeemMinutes(ctx, k.id, 120);
+                            if (!res.ok) alert(res.error || "Failed");
+                            rerender((x) => x + 1);
+                          }}
+                        >
+                          Redeem 120
+                        </button>
+                      ) : null}
                     </div>
                   )}
                 </div>
