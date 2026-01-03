@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState, useEffect } from "react";
 import { ErrorBoundary } from "./ui/ErrorBoundary.jsx";
 import SystemBar from "./ui/SystemBar.jsx";
 import DesktopSurface from "./ui/DesktopSurface.jsx";
@@ -22,6 +22,7 @@ import {
   hasHydrated,
   hydrateModuleFromServer,
   saveModuleToServer,
+  forceHydrateModuleFromServer,
 } from "./core/backendStore.js";
 
 function hasAnyWindows(db) {
@@ -372,6 +373,42 @@ export default function App() {
     setTick((t) => t + 1);
   }, []);
 
+  const onRefreshAll = useCallback(async () => {
+    for (const m of moduleList) {
+      try {
+        const serverVal = await forceHydrateModuleFromServer(m.id);
+        const isNonEmpty = serverVal && typeof serverVal === "object" && Object.keys(serverVal).length > 0;
+        if (isNonEmpty) {
+          setCachedModule(m.id, serverVal);
+          mutateDb((d) => { d.modules[m.id] = serverVal; });
+        }
+      } catch (err) {
+        // backend down or network error - skip this module
+      }
+    }
+    setTick((t) => t + 1);
+    console.log("[refresh] done");
+  }, [moduleList, mutateDb]);
+
+  const onSetRefreshInterval = useCallback((sec) => {
+    mutateDb((d) => {
+      d.settings ??= {};
+      d.settings.refreshIntervalSec = sec;
+    });
+  }, [mutateDb]);
+
+  // Auto-refresh interval
+  useEffect(() => {
+    const intervalSec = db.settings?.refreshIntervalSec ?? 0;
+    if (intervalSec <= 0) return;
+
+    const id = setInterval(() => {
+      onRefreshAll();
+    }, intervalSec * 1000);
+
+    return () => clearInterval(id);
+  }, [db.settings?.refreshIntervalSec, onRefreshAll]);
+
   // Popup derived
   const popupWin = popupWinId ? windowsById[popupWinId] : null;
   const popupDef = popupWin ? getModuleDef(popupWin.moduleId) : null;
@@ -388,6 +425,7 @@ export default function App() {
           modulesById={modulesById}
           onRestoreWindow={onRestoreWindow}
           onOpenSettings={() => setSettingsOpen(true)}
+          onRefreshAll={onRefreshAll}
         />
 
         <DesktopSurface
@@ -426,6 +464,8 @@ export default function App() {
             failedModules={failedModules}
             onResetLayoutOnly={onResetLayoutOnly}
             onFactoryReset={onFactoryReset}
+            refreshIntervalSec={db.settings?.refreshIntervalSec ?? 0}
+            onSetRefreshInterval={onSetRefreshInterval}
           />
         )}
 

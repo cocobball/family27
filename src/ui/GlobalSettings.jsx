@@ -26,6 +26,8 @@ export default function GlobalSettings({
   failedModules,
   onResetLayoutOnly,
   onFactoryReset,
+  refreshIntervalSec,
+  onSetRefreshInterval,
 }) {
   const [tab, setTab] = useState("data");
   const [importErr, setImportErr] = useState("");
@@ -99,6 +101,26 @@ export default function GlobalSettings({
                     Import failed: {importErr}
                   </div>
                 )}
+
+                <div className="pt-2 border-t hairline" />
+
+                <div className="space-y-2">
+                  <div className="text-sm font-semibold">Auto Refresh Interval</div>
+                  <div className="flex flex-wrap gap-2">
+                    {[0, 15, 30, 60, 120].map((sec) => (
+                      <button
+                        key={sec}
+                        className={"btn " + ((refreshIntervalSec ?? 0) === sec ? "btnPrimary" : "")}
+                        onClick={() => onSetRefreshInterval(sec)}
+                      >
+                        {sec === 0 ? "Off" : `${sec}s`}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="text-xs opacity-70">
+                    Automatically refresh all modules from server at this interval.
+                  </div>
+                </div>
 
                 <div className="pt-2 border-t hairline" />
 

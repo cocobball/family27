@@ -1,5 +1,5 @@
 import React from "react";
-import { Settings, RotateCcw } from "lucide-react";
+import { Settings, RotateCcw, RefreshCw } from "lucide-react";
 
 export default function SystemBar({
   title = "Family Dashboard",
@@ -7,6 +7,7 @@ export default function SystemBar({
   modulesById,
   onRestoreWindow,
   onOpenSettings,
+  onRefreshAll,
 }) {
   return (
     <div className="h-16 w-full px-4 flex items-center gap-4">
@@ -36,6 +37,16 @@ export default function SystemBar({
             );
           })}
         </div>
+
+        {/* Refresh button */}
+        <button
+          className="iconBtn shrink-0"
+          onClick={onRefreshAll}
+          aria-label="Refresh all modules"
+          title="Refresh all modules"
+        >
+          <RefreshCw size={20} />
+        </button>
 
         {/* Settings ALWAYS at far right */}
         <button

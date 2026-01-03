@@ -31,6 +31,15 @@ export async function hydrateModuleFromServer(moduleId) {
   return state;
 }
 
+export async function forceHydrateModuleFromServer(moduleId) {
+  const url = `${API_BASE}/modules/${encodeURIComponent(moduleId)}/state`;
+  const out = await fetchJson(url);
+  const state = out?.state && typeof out.state === "object" ? out.state : {};
+  cache.set(moduleId, state);
+  hydrated.add(moduleId);
+  return state;
+}
+
 export async function saveModuleToServer(moduleId, data) {
   const url = `${API_BASE}/modules/${encodeURIComponent(moduleId)}/state`;
   await fetchJson(url, {
