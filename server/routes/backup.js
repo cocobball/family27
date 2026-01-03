@@ -68,7 +68,7 @@ export default function registerBackupsRoutes(app) {
       }
 
       // Trigger systemd service to run the backup and return immediately
-      execFile("systemctl", ["start", "familydash-backup.service"], (err, stdout, stderr) => {
+      execFile("sudo", ["systemctl", "start", "familydash-backup.service"], (err, stdout, stderr) => {
         if (stdout) console.log("[backups] run stdout:", String(stdout || ""));
         if (stderr) console.log("[backups] run stderr:", String(stderr || ""));
         if (err) console.error("[backups] run err:", err);
