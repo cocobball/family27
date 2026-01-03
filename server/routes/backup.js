@@ -67,13 +67,12 @@ export default function registerBackupsRoutes(app) {
         return res.status(500).json({ ok: false, error: "Backup script missing" });
       }
 
-      // Spawn the backup script and return immediately
-      execFile(script, (err, stdout, stderr) => {
-        if (err) {
-          console.error("[backups] run failed", err, String(stdout || ""), String(stderr || ""));
-        } else {
-          console.log("[backups] run completed", String(stdout || ""));
-        }
+      // Trigger systemd service to run the backup and return immediately
+      execFile("systemctl", ["start", "familydash-backup.service"], (err, stdout, stderr) => {
+        if (stdout) console.log("[backups] run stdout:", String(stdout || ""));
+        if (stderr) console.log("[backups] run stderr:", String(stderr || ""));
+        if (err) console.error("[backups] run err:", err);
+        else console.log("[backups] run triggered via systemd");
       });
 
       return res.json({ ok: true, started: true });
