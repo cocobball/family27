@@ -1098,9 +1098,15 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
 
   // Parent: reset week (no reward reversing anymore)
   const parentResetWeek = () => {
+    const nextGameTimeByDay = { ...(normalized.gameTimeByDay || {}) };
+    if (ymd && Object.prototype.hasOwnProperty.call(nextGameTimeByDay, ymd)) {
+      delete nextGameTimeByDay[ymd];
+    }
+
     patch({
       ...normalized,
       doneByWeek: { ...(normalized.doneByWeek || {}), [weekKey]: {} },
+      gameTimeByDay: nextGameTimeByDay,
     });
   };
 
