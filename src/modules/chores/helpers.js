@@ -1,6 +1,6 @@
 // src/modules/chores/helpers.js
 
-export const CHORES_SCHEMA_VERSION = 4;
+export const CHORES_SCHEMA_VERSION = 5;
 
 export const PEOPLE_DEFAULTS = ["Cory", "Anna", "Brady", "Harvey"];
 export const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -11,36 +11,27 @@ export function defaultChoresData() {
 
     // core
     people: PEOPLE_DEFAULTS,
-    chores: [], // { id, day, person, name, reward?: { minutes:number, points:number }, createdAt }
+    // weekly chores (no rewards anymore)
+    chores: [], // { id, day, person, name, createdAt }
 
     // completion (weekly)
     doneByWeek: {}, // { [weekKey]: { [choreId]: true } }
 
-    // reward bookkeeping (weekly; used for idempotent award + reversible debit)
-    rewardGrantsByWeek: {}, // { [weekKey]: { [choreId]: { minutes?:true, points?:true, grantedAt:number } } }
-    weeklyBonusGrantsByWeek: {}, // { [weekKey]: { [person]: { minutes:number, points:number, grantedAt:number } } }
-
-    // one-off helper tasks (not weekly recurring chores)
+    // one-off helper tasks (keep rewards)
     helperTasks: [], // { id, title, assignedTo: ["harvey","brady"], reward:{minutes,points}, expiresAt?:number|null, status:"active"|"expired"|"completed", createdAt:number, completedAt?:number|null, completedBy?:string[] }
     helperGrants: {}, // { [helperId]: { [kidId]: { minutes?:true, points?:true, grantedAt:number } } }
 
-    // internet grants (daily) - idempotent bookkeeping
-    // { [ymd]: { [kidId]: { minutes:number, grantedAt:number } } }
-    internetGrantsByDay: {},
+    // Game Time sessions (daily) - idempotent bookkeeping
+    // { [ymd]: { [kidId]: { totalMinutes:number, startedAt:number|null, endsAt:number|null, status:"ready"|"active"|"ended", blockedAt?:number|null } } }
+    gameTimeByDay: {},
 
     // UI
     viewMode: "day", // "day" | "week"
 
-    // settings
+    // settings (parent-only, shown inside Parent panel)
     settings: {
-      weeklyBonusByPerson: {
-        Harvey: { minutes: 0, points: 0 },
-        Brady: { minutes: 0, points: 0 },
-      },
-
-      // If a kid finishes ALL chores for the selected day, show an "Enable internet" button.
-      // This is the duration to allow when they tap it.
-      internetMinutesOnDailyComplete: {
+      // minutes unlocked when a kid finishes ALL chores for the selected day
+      gameTimeMinutesOnDailyComplete: {
         Harvey: 0,
         Brady: 0,
       },
@@ -56,63 +47,54 @@ export function normalizeChoresData(raw) {
   const chores = Array.isArray(s.chores) ? s.chores : [];
   const doneByWeek = s.doneByWeek && typeof s.doneByWeek === "object" ? s.doneByWeek : {};
 
-  const rewardGrantsByWeek =
-    s.rewardGrantsByWeek && typeof s.rewardGrantsByWeek === "object" ? s.rewardGrantsByWeek : {};
-  const weeklyBonusGrantsByWeek =
-    s.weeklyBonusGrantsByWeek && typeof s.weeklyBonusGrantsByWeek === "object"
-      ? s.weeklyBonusGrantsByWeek
-      : {};
-
   const helperTasks = Array.isArray(s.helperTasks) ? s.helperTasks : [];
   const helperGrants = s.helperGrants && typeof s.helperGrants === "object" ? s.helperGrants : {};
 
-  const internetGrantsByDay =
-    s.internetGrantsByDay && typeof s.internetGrantsByDay === "object" ? s.internetGrantsByDay : {};
+  const gameTimeByDay = s.gameTimeByDay && typeof s.gameTimeByDay === "object" ? s.gameTimeByDay : {};
 
+  // legacy settings support
   const settings = s.settings && typeof s.settings === "object" ? s.settings : {};
-  const weeklyBonusByPerson =
-    settings.weeklyBonusByPerson && typeof settings.weeklyBonusByPerson === "object"
-      ? settings.weeklyBonusByPerson
-      : {};
-
-  const internetMinutesOnDailyComplete =
+  const legacyInternetMinutes =
     settings.internetMinutesOnDailyComplete && typeof settings.internetMinutesOnDailyComplete === "object"
       ? settings.internetMinutesOnDailyComplete
       : {};
+
+  const gameTimeMinutesOnDailyComplete =
+    settings.gameTimeMinutesOnDailyComplete && typeof settings.gameTimeMinutesOnDailyComplete === "object"
+      ? settings.gameTimeMinutesOnDailyComplete
+      : {};
+
+  // If new setting is missing but legacy exists, copy legacy into gameTime
+  const mergedGameTimeMinutes = {
+    ...base.settings.gameTimeMinutesOnDailyComplete,
+    ...gameTimeMinutesOnDailyComplete,
+  };
+  for (const k of Object.keys(legacyInternetMinutes || {})) {
+    if (mergedGameTimeMinutes[k] === undefined) mergedGameTimeMinutes[k] = legacyInternetMinutes[k];
+  }
 
   const mergedPeople = Array.from(new Set([...PEOPLE_DEFAULTS, ...people])).filter(Boolean);
 
   return {
     ...base,
     ...s,
+    version: CHORES_SCHEMA_VERSION,
     people: mergedPeople,
     chores: chores.map((c) => normalizeChore(c)).filter(Boolean),
     doneByWeek,
-    rewardGrantsByWeek,
-    weeklyBonusGrantsByWeek,
     helperTasks: helperTasks.map((t) => normalizeHelperTask(t)).filter(Boolean),
     helperGrants,
-    internetGrantsByDay,
+    gameTimeByDay,
     settings: {
       ...base.settings,
       ...settings,
-      weeklyBonusByPerson: {
-        ...base.settings.weeklyBonusByPerson,
-        ...weeklyBonusByPerson,
-      },
-      internetMinutesOnDailyComplete: {
-        ...base.settings.internetMinutesOnDailyComplete,
-        ...internetMinutesOnDailyComplete,
-      },
+      gameTimeMinutesOnDailyComplete: mergedGameTimeMinutes,
     },
   };
 }
 
 function normalizeChore(c) {
   if (!c || typeof c !== "object") return null;
-  const reward = c.reward && typeof c.reward === "object" ? c.reward : {};
-  const minutes = Number(reward.minutes || 0) || 0;
-  const points = Number(reward.points || 0) || 0;
 
   return {
     id: String(c.id || ""),
@@ -120,7 +102,8 @@ function normalizeChore(c) {
     person: String(c.person || PEOPLE_DEFAULTS[0]),
     name: String(c.name || ""),
     createdAt: Number(c.createdAt || 0) || 0,
-    reward: { minutes, points },
+    // reward is ignored for weekly chores now, but we don’t break old data
+    reward: c.reward && typeof c.reward === "object" ? c.reward : { minutes: 0, points: 0 },
   };
 }
 

@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { ClipboardList, X, Plus, Settings, Check, Trash2, Wifi } from "lucide-react";
+import { ClipboardList, X, Plus, Check, Trash2, Timer } from "lucide-react";
 import {
   DAYS,
   PEOPLE_DEFAULTS,
@@ -125,7 +125,7 @@ function useModuleData(ctx, defaultFn) {
 }
 
 // -----------------------------
-// Rewards bridge (event-driven)
+// Rewards bridge (event-driven) — used ONLY for helper tasks now
 // -----------------------------
 function emitRewardsCredit(ctx, { kidId, currency, amount, sourceRef, reason, metadata }) {
   const bus = getBus(ctx);
@@ -154,11 +154,8 @@ function emitRewardsDebit(ctx, { kidId, currency, amount, sourceRef, reason, met
 }
 
 // -----------------------------
-// Network bridge (event + optional API call)
+// Network bridge (event + API call)
 // -----------------------------
-// We do BOTH:
-// 1) emit an event so the Network module can own timers later
-// 2) POST /api/v1/network/kids/off as the immediate "allow" action
 async function allowKidsInternet(ctx, { minutes = 0, kidId = null, sourceRef = "" } = {}) {
   const bus = getBus(ctx);
 
@@ -171,7 +168,7 @@ async function allowKidsInternet(ctx, { minutes = 0, kidId = null, sourceRef = "
     at: Date.now(),
   });
 
-  // Direct API (works even if Network module doesn’t listen yet)
+  // Direct API
   try {
     await fetch("/api/v1/network/kids/off", { method: "POST" });
   } catch (e) {
@@ -311,101 +308,7 @@ function ParentGate({ ctx, title = "Parent", children, onCancel }) {
 }
 
 // -----------------------------
-// Weekly bonus logic (credit + reversible debit)
-// -----------------------------
-function maybeGrantWeeklyBonus(ctx, choresData, weekKey, person) {
-  const s = normalizeChoresData(choresData);
-
-  const kidId = mapPersonToKidId(person);
-  if (!kidId) return s;
-
-  const bonusCfg = s.settings?.weeklyBonusByPerson?.[person] || { minutes: 0, points: 0 };
-  const bonusMinutes = Number(bonusCfg.minutes || 0) || 0;
-  const bonusPoints = Number(bonusCfg.points || 0) || 0;
-  if (bonusMinutes === 0 && bonusPoints === 0) return s;
-
-  const already = !!(s.weeklyBonusGrantsByWeek?.[weekKey]?.[person]);
-  if (already) return s;
-
-  const personChores = (s.chores || []).filter((c) => c.person === person);
-  if (!personChores.length) return s;
-
-  const doneMap = s.doneByWeek?.[weekKey] || {};
-  const allDone = personChores.every((c) => !!doneMap[c.id]);
-  if (!allDone) return s;
-
-  const wk = { ...(s.weeklyBonusGrantsByWeek?.[weekKey] || {}) };
-  wk[person] = { minutes: bonusMinutes, points: bonusPoints, grantedAt: Date.now() };
-
-  const next = { ...s, weeklyBonusGrantsByWeek: { ...(s.weeklyBonusGrantsByWeek || {}), [weekKey]: wk } };
-
-  if (bonusMinutes > 0) {
-    emitRewardsCredit(ctx, {
-      kidId,
-      currency: "minutes",
-      amount: bonusMinutes,
-      sourceRef: `weekly:${weekKey}:${kidId}:minutes`,
-      reason: "Weekly chores bonus",
-      metadata: { weekKey, person },
-    });
-  }
-  if (bonusPoints > 0) {
-    emitRewardsCredit(ctx, {
-      kidId,
-      currency: "points",
-      amount: bonusPoints,
-      sourceRef: `weekly:${weekKey}:${kidId}:points`,
-      reason: "Weekly chores bonus",
-      metadata: { weekKey, person },
-    });
-  }
-
-  return next;
-}
-
-function reverseWeeklyBonusIfGranted(ctx, choresData, weekKey, person) {
-  const s = normalizeChoresData(choresData);
-  const grant = s.weeklyBonusGrantsByWeek?.[weekKey]?.[person];
-  if (!grant) return s;
-
-  const kidId = mapPersonToKidId(person);
-  if (!kidId) return s;
-
-  const mins = Number(grant.minutes || 0) || 0;
-  const pts = Number(grant.points || 0) || 0;
-
-  if (mins > 0) {
-    emitRewardsDebit(ctx, {
-      kidId,
-      currency: "minutes",
-      amount: mins,
-      sourceRef: `weekly:${weekKey}:${kidId}:minutes`,
-      reason: "Reversed weekly chores bonus",
-      metadata: { weekKey, person },
-    });
-  }
-  if (pts > 0) {
-    emitRewardsDebit(ctx, {
-      kidId,
-      currency: "points",
-      amount: pts,
-      sourceRef: `weekly:${weekKey}:${kidId}:points`,
-      reason: "Reversed weekly chores bonus",
-      metadata: { weekKey, person },
-    });
-  }
-
-  const wk = { ...(s.weeklyBonusGrantsByWeek?.[weekKey] || {}) };
-  delete wk[person];
-
-  return {
-    ...s,
-    weeklyBonusGrantsByWeek: { ...(s.weeklyBonusGrantsByWeek || {}), [weekKey]: wk },
-  };
-}
-
-// -----------------------------
-// Helper tasks logic
+// Helper tasks logic (rewards stay here)
 // -----------------------------
 function syncHelperExpiry(choresData) {
   const s = normalizeChoresData(choresData);
@@ -541,7 +444,7 @@ function reverseHelperTaskIfCompleted(ctx, choresData, helperTaskId) {
 }
 
 // -----------------------------
-// Daily completion helpers (internet button)
+// Daily completion + Game Time
 // -----------------------------
 function getDailyCompletionState(data, baseDate, person) {
   const kidId = mapPersonToKidId(person);
@@ -553,15 +456,23 @@ function getDailyCompletionState(data, baseDate, person) {
   return { kidId, total, done, allDone: total > 0 && done === total };
 }
 
-function hasInternetGrantForDay(data, ymd, kidId) {
-  const perDay = data.internetGrantsByDay?.[ymd] || {};
-  return !!perDay?.[kidId];
+function getGameTimeSession(data, ymd, kidId) {
+  const perDay = data.gameTimeByDay?.[ymd] || {};
+  return perDay?.[kidId] || null;
 }
 
-function recordInternetGrantForDay(data, ymd, kidId, minutes) {
-  const perDay = { ...(data.internetGrantsByDay?.[ymd] || {}) };
-  perDay[kidId] = { minutes: Number(minutes) || 0, grantedAt: Date.now() };
-  return { ...data, internetGrantsByDay: { ...(data.internetGrantsByDay || {}), [ymd]: perDay } };
+function setGameTimeSession(data, ymd, kidId, patchSession) {
+  const perDay = { ...(data.gameTimeByDay?.[ymd] || {}) };
+  const cur = perDay[kidId] || { totalMinutes: 0, startedAt: null, endsAt: null, status: "ready", blockedAt: null };
+  perDay[kidId] = { ...cur, ...(patchSession || {}) };
+  return { ...data, gameTimeByDay: { ...(data.gameTimeByDay || {}), [ymd]: perDay } };
+}
+
+function msToClock(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
 }
 
 // -----------------------------
@@ -573,11 +484,9 @@ export default function ChoresModule({ ctx }) {
 
   const { data: rawData, patch } = useModuleData(ctx, defaultChoresData);
   const data0 = useMemo(() => normalizeChoresData(rawData), [rawData]);
-
   const data = useMemo(() => syncHelperExpiry(data0), [data0]);
 
   const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [helperChooser, setHelperChooser] = useState(null);
   const [pendingConfirm, setPendingConfirm] = useState(null);
 
@@ -612,6 +521,7 @@ export default function ChoresModule({ ctx }) {
   const setViewMode = (mode) => patch({ viewMode: mode });
 
   const people = data.people || [];
+  const ymd = useMemo(() => ymdFromDate(baseDate || new Date()), [baseDate]);
 
   const activeHelpers = useMemo(
     () => (data.helperTasks || []).filter((t) => t.status === "active"),
@@ -678,6 +588,7 @@ export default function ChoresModule({ ctx }) {
     bus?.emit?.("choresForDate:changed", { selectedDate: selected, chores: choresForSelectedDate });
   }, [rawData, ctx, bus]);
 
+  // NOTE: Weekly chores no longer grant rewards. Just mark done.
   const markDoneChild = (weekKey, chore) => {
     const curDone = !!(data.doneByWeek?.[weekKey]?.[chore.id]);
     if (curDone) return;
@@ -685,51 +596,75 @@ export default function ChoresModule({ ctx }) {
     const nextWeekDone = { ...(data.doneByWeek?.[weekKey] || {}), [chore.id]: true };
     const nextDoneByWeek = { ...(data.doneByWeek || {}), [weekKey]: nextWeekDone };
 
-    const reward = chore.reward || { minutes: 0, points: 0 };
-    const minutes = Number(reward.minutes || 0) || 0;
-    const points = Number(reward.points || 0) || 0;
-
-    const kidId = mapPersonToKidId(chore.person);
-
-    const wkGrants = { ...(data.rewardGrantsByWeek?.[weekKey] || {}) };
-    const choreGrant = { ...(wkGrants[chore.id] || {}) };
-
-    if (kidId && minutes > 0 && !choreGrant.minutes) {
-      emitRewardsCredit(ctx, {
-        kidId,
-        currency: "minutes",
-        amount: minutes,
-        sourceRef: `chore:${weekKey}:${chore.id}:minutes`,
-        reason: `Chore: ${chore.name}`,
-        metadata: { weekKey, choreId: chore.id, choreName: chore.name, person: chore.person },
-      });
-      choreGrant.minutes = true;
-    }
-    if (kidId && points > 0 && !choreGrant.points) {
-      emitRewardsCredit(ctx, {
-        kidId,
-        currency: "points",
-        amount: points,
-        sourceRef: `chore:${weekKey}:${chore.id}:points`,
-        reason: `Chore: ${chore.name}`,
-        metadata: { weekKey, choreId: chore.id, choreName: chore.name, person: chore.person },
-      });
-      choreGrant.points = true;
-    }
-
-    if (choreGrant.minutes || choreGrant.points) {
-      choreGrant.grantedAt = Date.now();
-      wkGrants[chore.id] = choreGrant;
-    }
-
-    const nextBase = {
+    patch({
       ...data,
       doneByWeek: nextDoneByWeek,
-      rewardGrantsByWeek: { ...(data.rewardGrantsByWeek || {}), [weekKey]: wkGrants },
-    };
+    });
+  };
 
-    const nextAfterBonus = maybeGrantWeeklyBonus(ctx, nextBase, weekKey, chore.person);
-    patch(nextAfterBonus);
+  // Main-screen Game Time button state tick
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => forceTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Best-effort: if we have an active session that has ended, mark ended + block once
+  useEffect(() => {
+    const now = Date.now();
+    let next = data;
+    let changed = false;
+
+    const perDay = data.gameTimeByDay?.[ymd] || {};
+    for (const kidId of Object.keys(perDay)) {
+      const s = perDay[kidId];
+      if (!s || s.status !== "active") continue;
+      if (!s.endsAt) continue;
+      if (now < s.endsAt) continue;
+
+      changed = true;
+      next = setGameTimeSession(next, ymd, kidId, { status: "ended" });
+
+      // block once
+      const ended = getGameTimeSession(next, ymd, kidId);
+      if (!ended?.blockedAt) {
+        next = setGameTimeSession(next, ymd, kidId, { blockedAt: Date.now() });
+        blockKidsInternet(ctx, { sourceRef: `gametime:end:${ymd}:${kidId}` });
+      }
+    }
+
+    if (changed) patch(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, ymd]);
+
+  const startGameTimeForKid = async (person) => {
+    const daily = getDailyCompletionState(data, baseDate || new Date(), person);
+    const kidId = daily.kidId;
+    if (!kidId || !daily.allDone) return;
+
+    const totalMinutes = Number(data.settings?.gameTimeMinutesOnDailyComplete?.[person] || 0) || 0;
+    if (totalMinutes <= 0) return;
+
+    const existing = getGameTimeSession(data, ymd, kidId);
+    if (existing?.status === "active" || existing?.status === "ended") return;
+
+    const now = Date.now();
+    const endsAt = now + totalMinutes * 60 * 1000;
+
+    const next = setGameTimeSession(data, ymd, kidId, {
+      totalMinutes,
+      startedAt: now,
+      endsAt,
+      status: "active",
+      blockedAt: null,
+    });
+    patch(next);
+
+    await allowKidsInternet(ctx, {
+      minutes: totalMinutes,
+      kidId,
+      sourceRef: `gametime:start:${ymd}:${kidId}:${totalMinutes}`,
+    });
   };
 
   return (
@@ -755,14 +690,6 @@ export default function ChoresModule({ ctx }) {
           >
             Week
           </button>
-
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="ml-1 p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-all"
-            title="Settings (Parent)"
-          >
-            <Settings size={16} />
-          </button>
         </div>
       </div>
 
@@ -787,25 +714,68 @@ export default function ChoresModule({ ctx }) {
               const list = cardModel.byPerson[person] || [];
               if (!list.length) return null;
 
+              const daily = viewMode === "day" ? getDailyCompletionState(data, baseDate || new Date(), person) : null;
+              const kidId = daily?.kidId || null;
+
+              const totalMinutes = Number(data.settings?.gameTimeMinutesOnDailyComplete?.[person] || 0) || 0;
+              const session = viewMode === "day" && kidId ? getGameTimeSession(data, ymd, kidId) : null;
+
+              const canShowGameTime =
+                viewMode === "day" &&
+                kidId &&
+                daily?.allDone &&
+                totalMinutes > 0 &&
+                (!session || session.status === "ready" || session.status === null);
+
+              const isActive = session?.status === "active" && session?.endsAt;
+              const isEnded = session?.status === "ended";
+
+              const remainingMs = isActive ? Math.max(0, session.endsAt - Date.now()) : 0;
+
               return (
                 <div key={person} className="py-2 border-b border-white/10 last:border-b-0">
-                  <div className="text-sm font-semibold opacity-90 mb-1">{person}</div>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <div className="text-sm font-semibold opacity-90">{person}</div>
+
+                    {/* GAME TIME BUTTON (main screen — where you circled) */}
+                    {viewMode === "day" && kidId ? (
+                      <div className="flex items-center gap-2">
+                        {canShowGameTime ? (
+                          <button
+                            onClick={() => startGameTimeForKid(person)}
+                            className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-xs flex items-center gap-2"
+                            title="Start game time"
+                          >
+                            <Timer className="w-4 h-4" />
+                            Game time ({totalMinutes}m) • Start
+                          </button>
+                        ) : isActive ? (
+                          <div className="px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-white/90 text-xs flex items-center gap-2">
+                            <Timer className="w-4 h-4" />
+                            Game time: {msToClock(remainingMs)}
+                          </div>
+                        ) : isEnded ? (
+                          <div className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-white/60 text-xs">
+                            Game time ended
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+
                   <div className="space-y-1">
                     {list.map((c) => (
                       <div key={c.id} className="flex items-center gap-2 text-sm opacity-90">
                         <button
                           type="button"
                           onClick={() => {
-                            if (!c.done) {
-                              setPendingConfirm({ type: "chore", weekKey: cardModel.weekKey, chore: c });
-                            }
+                            if (!c.done) setPendingConfirm({ type: "chore", weekKey: cardModel.weekKey, chore: c });
                           }}
                           className="flex items-center gap-2 w-full text-left"
                         >
                           <span className="inline-block w-4">{c.done ? "✅" : "⬜"}</span>
                           <span className={c.done ? "line-through opacity-70" : ""}>
                             {viewMode === "week" ? `${c.day}: ${c.name}` : c.name}
-                            {formatInlineReward(c.reward)}
                           </span>
                         </button>
                       </div>
@@ -830,9 +800,7 @@ export default function ChoresModule({ ctx }) {
                           {formatInlineReward(t.reward)}
                         </div>
                         {t.expiresAt && (
-                          <div className="text-xs opacity-50 mt-0.5">
-                            Expires: {new Date(t.expiresAt).toLocaleDateString()}
-                          </div>
+                          <div className="text-xs opacity-50 mt-0.5">Expires: {new Date(t.expiresAt).toLocaleDateString()}</div>
                         )}
                       </div>
                       <button
@@ -859,7 +827,6 @@ export default function ChoresModule({ ctx }) {
       </div>
 
       <ChoreModeOverlay ctx={ctx} data={data} patch={patch} baseDate={baseDate} onChildMarkDone={markDoneChild} />
-      <SettingsOverlay ctx={ctx} open={settingsOpen} onClose={() => setSettingsOpen(false)} data={data} patch={patch} />
 
       {pendingConfirm ? (
         <ConfirmCompleteModal
@@ -915,8 +882,14 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const [newPerson, setNewPerson] = useState(PEOPLE_DEFAULTS[0]);
   const [newPersonCustom, setNewPersonCustom] = useState("");
   const [newDay, setNewDay] = useState(() => getDayName(baseDate || new Date()));
-  const [newRewardMinutes, setNewRewardMinutes] = useState(0);
-  const [newRewardPoints, setNewRewardPoints] = useState(0);
+
+  // Parent settings: game time minutes per kid
+  const [gameTimeHarvey, setGameTimeHarvey] = useState(
+    Number(normalized.settings?.gameTimeMinutesOnDailyComplete?.Harvey || 0) || 0
+  );
+  const [gameTimeBrady, setGameTimeBrady] = useState(
+    Number(normalized.settings?.gameTimeMinutesOnDailyComplete?.Brady || 0) || 0
+  );
 
   // Add helper task form (parent)
   const [helperTitle, setHelperTitle] = useState("");
@@ -959,113 +932,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     [normalized.helperTasks]
   );
 
-  // Parent-only: uncheck weekly chore (with reward reversal)
-  const parentUncheck = (chore) => {
-    const isDone = !!doneMap[chore.id];
-    if (!isDone) return;
-
-    const reward = chore.reward || { minutes: 0, points: 0 };
-    const minutes = Number(reward.minutes || 0) || 0;
-    const points = Number(reward.points || 0) || 0;
-
-    const kidId = mapPersonToKidId(chore.person);
-
-    const wkGrants = { ...(normalized.rewardGrantsByWeek?.[weekKey] || {}) };
-    const grant = wkGrants[chore.id] || {};
-
-    if (kidId && minutes > 0 && grant.minutes) {
-      emitRewardsDebit(ctx, {
-        kidId,
-        currency: "minutes",
-        amount: minutes,
-        sourceRef: `chore:${weekKey}:${chore.id}:minutes`,
-        reason: `Reversed chore: ${chore.name}`,
-        metadata: { weekKey, choreId: chore.id, choreName: chore.name, person: chore.person },
-      });
-      delete grant.minutes;
-    }
-    if (kidId && points > 0 && grant.points) {
-      emitRewardsDebit(ctx, {
-        kidId,
-        currency: "points",
-        amount: points,
-        sourceRef: `chore:${weekKey}:${chore.id}:points`,
-        reason: `Reversed chore: ${chore.name}`,
-        metadata: { weekKey, choreId: chore.id, choreName: chore.name, person: chore.person },
-      });
-      delete grant.points;
-    }
-
-    if (!grant.minutes && !grant.points) {
-      delete wkGrants[chore.id];
-    } else {
-      wkGrants[chore.id] = { ...grant };
-    }
-
-    const nextWeek = { ...(normalized.doneByWeek?.[weekKey] || {}) };
-    delete nextWeek[chore.id];
-
-    let nextData = {
-      ...normalized,
-      doneByWeek: { ...(normalized.doneByWeek || {}), [weekKey]: nextWeek },
-      rewardGrantsByWeek: { ...(normalized.rewardGrantsByWeek || {}), [weekKey]: wkGrants },
-    };
-
-    nextData = reverseWeeklyBonusIfGranted(ctx, nextData, weekKey, chore.person);
-    patch(nextData);
-  };
-
-  // Parent-only: reset week (reverse all rewards + bonus for that week)
-  const parentResetWeekSafe = () => {
-    const wkGrants = { ...(normalized.rewardGrantsByWeek?.[weekKey] || {}) };
-
-    for (const choreId of Object.keys(wkGrants)) {
-      const chore = (normalized.chores || []).find((c) => c.id === choreId);
-      if (!chore) continue;
-
-      const reward = chore.reward || { minutes: 0, points: 0 };
-      const minutes = Number(reward.minutes || 0) || 0;
-      const points = Number(reward.points || 0) || 0;
-      const kidId = mapPersonToKidId(chore.person);
-
-      const grant = wkGrants[choreId] || {};
-      if (kidId && minutes > 0 && grant.minutes) {
-        emitRewardsDebit(ctx, {
-          kidId,
-          currency: "minutes",
-          amount: minutes,
-          sourceRef: `chore:${weekKey}:${choreId}:minutes`,
-          reason: `Reversed chore: ${chore.name}`,
-          metadata: { weekKey, choreId, choreName: chore.name, person: chore.person },
-        });
-      }
-      if (kidId && points > 0 && grant.points) {
-        emitRewardsDebit(ctx, {
-          kidId,
-          currency: "points",
-          amount: points,
-          sourceRef: `chore:${weekKey}:${choreId}:points`,
-          reason: `Reversed chore: ${chore.name}`,
-          metadata: { weekKey, choreId, choreName: chore.name, person: chore.person },
-        });
-      }
-    }
-
-    const wkBonus = normalized.weeklyBonusGrantsByWeek?.[weekKey] || {};
-    let nextData = { ...normalized };
-    for (const person of Object.keys(wkBonus)) {
-      nextData = reverseWeeklyBonusIfGranted(ctx, nextData, weekKey, person);
-    }
-
-    patch({
-      ...nextData,
-      doneByWeek: { ...(nextData.doneByWeek || {}), [weekKey]: {} },
-      rewardGrantsByWeek: { ...(nextData.rewardGrantsByWeek || {}), [weekKey]: {} },
-      weeklyBonusGrantsByWeek: { ...(nextData.weeklyBonusGrantsByWeek || {}), [weekKey]: {} },
-    });
-  };
-
-  // Parent: add weekly chore
+  // Parent: add weekly chore (NO rewards)
   const parentAddChore = () => {
     const name = newName.trim();
     if (!name) return;
@@ -1080,15 +947,11 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
       if (!nextPeople.includes(custom)) nextPeople = [...nextPeople, custom];
     }
 
-    const rewardMinutes = Number(newRewardMinutes || 0) || 0;
-    const rewardPoints = Number(newRewardPoints || 0) || 0;
-
     const chore = {
       id: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
       day: newDay,
       person,
       name,
-      reward: { minutes: rewardMinutes, points: rewardPoints },
       createdAt: Date.now(),
     };
 
@@ -1101,15 +964,9 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     setNewName("");
     setNewPerson(PEOPLE_DEFAULTS[0]);
     setNewPersonCustom("");
-    setNewRewardMinutes(0);
-    setNewRewardPoints(0);
   };
 
   const parentRemoveChore = (choreId) => {
-    const chore = (normalized.chores || []).find((c) => c.id === choreId);
-    const isDone = !!doneMap[choreId];
-    if (chore && isDone) parentUncheck(chore);
-
     const nextChores = (normalized.chores || []).filter((c) => c.id !== choreId);
 
     const nextDoneByWeek = { ...(normalized.doneByWeek || {}) };
@@ -1121,20 +978,18 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
       }
     }
 
-    const nextRewardGrantsByWeek = { ...(normalized.rewardGrantsByWeek || {}) };
-    for (const wk of Object.keys(nextRewardGrantsByWeek)) {
-      if (nextRewardGrantsByWeek[wk] && nextRewardGrantsByWeek[wk][choreId]) {
-        const n = { ...nextRewardGrantsByWeek[wk] };
-        delete n[choreId];
-        nextRewardGrantsByWeek[wk] = n;
-      }
-    }
-
     patch({
       ...normalized,
       chores: nextChores,
       doneByWeek: nextDoneByWeek,
-      rewardGrantsByWeek: nextRewardGrantsByWeek,
+    });
+  };
+
+  // Parent: reset week (no reward reversing anymore)
+  const parentResetWeek = () => {
+    patch({
+      ...normalized,
+      doneByWeek: { ...(normalized.doneByWeek || {}), [weekKey]: {} },
     });
   };
 
@@ -1195,23 +1050,17 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     });
   };
 
-  // Child: enable internet if daily chores complete (button)
-  const enableInternetForKidToday = async (kidPerson) => {
-    const { kidId, allDone } = getDailyCompletionState(normalized, baseDate || new Date(), kidPerson);
-    if (!kidId || !allDone) return;
-
-    const minutesCfg = Number(normalized.settings?.internetMinutesOnDailyComplete?.[kidPerson] || 0) || 0;
-    if (minutesCfg <= 0) return;
-
-    if (hasInternetGrantForDay(normalized, ymd, kidId)) return;
-
-    const next = recordInternetGrantForDay(normalized, ymd, kidId, minutesCfg);
-    patch(next);
-
-    await allowKidsInternet(ctx, {
-      minutes: minutesCfg,
-      kidId,
-      sourceRef: `daily:${ymd}:${kidId}:${minutesCfg}`,
+  const saveParentSettings = () => {
+    patch({
+      ...normalized,
+      settings: {
+        ...(normalized.settings || {}),
+        gameTimeMinutesOnDailyComplete: {
+          ...(normalized.settings?.gameTimeMinutesOnDailyComplete || {}),
+          Harvey: Number(gameTimeHarvey || 0) || 0,
+          Brady: Number(gameTimeBrady || 0) || 0,
+        },
+      },
     });
   };
 
@@ -1259,6 +1108,49 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                 <div className="self-start bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
                   <ParentGate ctx={ctx} title="Parent tools" onCancel={() => setParentPanelOpen(false)}>
                     <div className="space-y-6">
+                      {/* SETTINGS (moved here) */}
+                      <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                        <div className="text-white text-xl font-semibold mb-2">Game Time settings</div>
+                        <div className="text-white/60 text-sm mb-4">
+                          When a kid finishes <span className="text-white/80">all chores for the day</span>, they can start Game Time.
+                          Starting it enables internet and starts a countdown.
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Harvey (minutes)</label>
+                            <input
+                              type="number"
+                              value={gameTimeHarvey}
+                              onChange={(e) => setGameTimeHarvey(e.target.value)}
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-white/70 text-sm mb-2 block">Brady (minutes)</label>
+                            <input
+                              type="number"
+                              value={gameTimeBrady}
+                              onChange={(e) => setGameTimeBrady(e.target.value)}
+                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                            />
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={saveParentSettings}
+                          className="mt-3 w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all bg-white/15 hover:bg-white/25 border border-white/20"
+                        >
+                          Save settings
+                        </button>
+
+                        <div className="text-white/40 text-xs mt-3">
+                          Start triggers <code className="text-white/70">POST /api/v1/network/kids/off</code>. End triggers{" "}
+                          <code className="text-white/70">POST /api/v1/network/kids/on</code> (best effort).
+                        </div>
+                      </div>
+
+                      {/* ADD WEEKLY CHORE */}
                       <div>
                         <div className="text-white text-xl font-semibold mb-4">Add weekly chore</div>
 
@@ -1318,27 +1210,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                             />
                           </div>
 
-                          <div className="grid grid-cols-2 gap-3">
-                            <div>
-                              <label className="text-white/70 text-sm mb-2 block">Reward minutes</label>
-                              <input
-                                type="number"
-                                value={newRewardMinutes}
-                                onChange={(e) => setNewRewardMinutes(e.target.value)}
-                                className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-white/70 text-sm mb-2 block">Reward points</label>
-                              <input
-                                type="number"
-                                value={newRewardPoints}
-                                onChange={(e) => setNewRewardPoints(e.target.value)}
-                                className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                              />
-                            </div>
-                          </div>
-
                           <button
                             onClick={parentAddChore}
                             className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
@@ -1349,9 +1220,10 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                         </div>
                       </div>
 
+                      {/* HELPER TASKS */}
                       <div>
                         <div className="text-white text-xl font-semibold mb-2">Daily Helper tasks</div>
-                        <div className="text-white/60 text-sm mb-4">One-off bonus tasks. Can expire.</div>
+                        <div className="text-white/60 text-sm mb-4">One-off bonus tasks. Can expire. Rewards stay here.</div>
 
                         <div className="space-y-4">
                           <div>
@@ -1465,12 +1337,11 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
 
                       <div className="pt-4 border-t border-white/10">
                         <button
-                          onClick={parentResetWeekSafe}
+                          onClick={parentResetWeek}
                           className="w-full px-3 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-white/70 hover:text-white/90 transition-all text-xs"
                         >
-                          Reset week (uncheck + reverse rewards)
+                          Reset week (uncheck all)
                         </button>
-                        <div className="text-white/30 text-xs mt-2 text-center">Debit rewards granted this week</div>
                       </div>
                     </div>
                   </ParentGate>
@@ -1490,27 +1361,10 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                         const list = todaysChoresByPerson[person] || [];
                         if (!list.length) return null;
 
-                        const daily = getDailyCompletionState(normalized, baseDate || new Date(), person);
-                        const kidId = daily.kidId;
-                        const internetMins = Number(normalized.settings?.internetMinutesOnDailyComplete?.[person] || 0) || 0;
-                        const canShowInternet =
-                          kidId && daily.allDone && internetMins > 0 && !hasInternetGrantForDay(normalized, ymd, kidId);
-
                         return (
                           <div key={person} className="space-y-3">
                             <div className="px-3 py-2 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
                               <div className="text-white font-semibold">{person}</div>
-
-                              {canShowInternet ? (
-                                <button
-                                  onClick={() => enableInternetForKidToday(person)}
-                                  className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-sm flex items-center gap-2"
-                                  title="Allow internet"
-                                >
-                                  <Wifi className="w-4 h-4" />
-                                  Enable internet ({internetMins}m)
-                                </button>
-                              ) : null}
                             </div>
 
                             <div className="space-y-3">
@@ -1535,7 +1389,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                                         className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
                                           done ? "bg-green-500 border-green-500" : "border-white/40 hover:border-white/70"
                                         }`}
-                                        title={done ? "Done (parent required to uncheck)" : "Mark as done"}
+                                        title={done ? "Done (parent required to uncheck via reset)" : "Mark as done"}
                                       >
                                         {done ? <Check className="w-4 h-4 text-white" /> : null}
                                       </button>
@@ -1543,7 +1397,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                                       <div className="min-w-0">
                                         <div className={`text-white font-medium truncate ${done ? "line-through" : ""}`}>
                                           {c.name}
-                                          <span className="text-white/60 text-xs">{formatInlineReward(c.reward)}</span>
                                         </div>
                                       </div>
                                     </div>
@@ -1551,9 +1404,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                                     {parentPanelOpen ? (
                                       <button
                                         onClick={() => {
-                                          if (window.confirm("Delete this chore?")) {
-                                            parentRemoveChore(c.id);
-                                          }
+                                          if (window.confirm("Delete this chore?")) parentRemoveChore(c.id);
                                         }}
                                         className="p-1.5 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 transition-all"
                                         title="Delete chore"
@@ -1622,7 +1473,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                     Press <span className="text-white/60">ESC</span> to exit
                   </div>
 
-                  {/* Optional emergency block button for parent (hidden unless parent panel open) */}
                   {parentPanelOpen ? (
                     <div className="text-center">
                       <button
@@ -1699,157 +1549,4 @@ function ConfirmCompleteModal({ title, subtitle, details, onCancel, onConfirm })
     </div>,
     document.body
   );
-}
-
-// -----------------------------
-// Settings overlay (gear icon) — parent-only
-// -----------------------------
-function SettingsOverlay({ ctx, open, onClose, data, patch }) {
-  if (!open) return null;
-
-  const normalized = normalizeChoresData(data);
-
-  const content = (
-    <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm">
-      <div className="h-screen overflow-auto">
-        <div className="min-h-screen flex flex-col p-4 md:p-8">
-          <div className="max-w-3xl mx-auto w-full flex-1">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-3">
-                <div className="p-3 bg-white/10 rounded-2xl">
-                  <Settings className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <div className="text-white text-2xl font-bold">Chores Settings</div>
-                  <div className="text-white/60 text-sm">Parent-only settings</div>
-                </div>
-              </div>
-
-              <button
-                className="p-3 bg-white/10 backdrop-blur-lg rounded-xl hover:bg-white/20 transition-all"
-                onClick={onClose}
-                title="Close"
-              >
-                <X className="w-6 h-6 text-white" />
-              </button>
-            </div>
-
-            <ParentGate ctx={ctx} title="Settings" onCancel={onClose}>
-              <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl space-y-6">
-                <div>
-                  <div className="text-white text-xl font-semibold mb-2">Weekly bonus rewards</div>
-                  <div className="text-white/60 text-sm mb-5">
-                    When a child completes <span className="text-white/80">all their chores</span> for the week, grant this bonus.
-                  </div>
-
-                  {["Harvey", "Brady"].map((kid) => {
-                    const cfg = normalized.settings?.weeklyBonusByPerson?.[kid] || { minutes: 0, points: 0 };
-                    return (
-                      <div key={kid} className="rounded-2xl bg-white/5 border border-white/10 p-4 mb-3">
-                        <div className="text-white font-semibold mb-3">{kid}</div>
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Minutes</label>
-                            <input
-                              type="number"
-                              value={Number(cfg.minutes || 0) || 0}
-                              onChange={(e) => {
-                                const v = Number(e.target.value || 0) || 0;
-                                patch({
-                                  ...normalized,
-                                  settings: {
-                                    ...(normalized.settings || {}),
-                                    weeklyBonusByPerson: {
-                                      ...(normalized.settings?.weeklyBonusByPerson || {}),
-                                      [kid]: { ...(cfg || {}), minutes: v },
-                                    },
-                                  },
-                                });
-                              }}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="text-white/70 text-sm mb-2 block">Points</label>
-                            <input
-                              type="number"
-                              value={Number(cfg.points || 0) || 0}
-                              onChange={(e) => {
-                                const v = Number(e.target.value || 0) || 0;
-                                patch({
-                                  ...normalized,
-                                  settings: {
-                                    ...(normalized.settings || {}),
-                                    weeklyBonusByPerson: {
-                                      ...(normalized.settings?.weeklyBonusByPerson || {}),
-                                      [kid]: { ...(cfg || {}), points: v },
-                                    },
-                                  },
-                                });
-                              }}
-                              className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="text-white/40 text-xs mt-3">Set either to 0 if you don’t want that reward type.</div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="border-t border-white/10 pt-6">
-                  <div className="text-white text-xl font-semibold mb-2">Internet unlock (daily)</div>
-                  <div className="text-white/60 text-sm mb-4">
-                    When a kid finishes <span className="text-white/80">all chores for the day</span>, show an “Enable internet” button for this many minutes.
-                  </div>
-
-                  {["Harvey", "Brady"].map((kid) => {
-                    const cur = Number(normalized.settings?.internetMinutesOnDailyComplete?.[kid] || 0) || 0;
-                    return (
-                      <div key={kid} className="rounded-2xl bg-white/5 border border-white/10 p-4 mb-3">
-                        <div className="text-white font-semibold mb-2">{kid}</div>
-                        <label className="text-white/70 text-sm mb-2 block">Minutes</label>
-                        <input
-                          type="number"
-                          value={cur}
-                          onChange={(e) => {
-                            const v = Number(e.target.value || 0) || 0;
-                            patch({
-                              ...normalized,
-                              settings: {
-                                ...(normalized.settings || {}),
-                                internetMinutesOnDailyComplete: {
-                                  ...(normalized.settings?.internetMinutesOnDailyComplete || {}),
-                                  [kid]: v,
-                                },
-                              },
-                            });
-                          }}
-                          className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                        />
-                        <div className="text-white/40 text-xs mt-2">
-                          This button triggers <code className="text-white/70">POST /api/v1/network/kids/off</code>.
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                  <div className="text-white font-semibold">Note</div>
-                  <div className="text-white/60 text-sm mt-1">
-                    This module does not poll status. It only sends the “on/off” action.
-                  </div>
-                </div>
-              </div>
-            </ParentGate>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  return createPortal(content, document.body);
 }
