@@ -1,6 +1,5 @@
 // src/modules/chores/helpers.js
-
-export const CHORES_SCHEMA_VERSION = 5;
+export const CHORES_SCHEMA_VERSION = 6;
 
 export const PEOPLE_DEFAULTS = ["Cory", "Anna", "Brady", "Harvey"];
 export const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -11,8 +10,18 @@ export function defaultChoresData() {
 
     // core
     people: PEOPLE_DEFAULTS,
+
     // weekly chores (no rewards anymore)
     chores: [], // { id, day, person, name, createdAt }
+
+    // chore bank (planning templates)
+    choreBank: [], // { id, title, tags:[], createdAt }
+
+    // chore planner routine (applies to current routine; publish generates weekly chores)
+    planner: {
+      plan: {}, // { [day]: { [person]: [bankId,...] } }
+      lastPublishedAt: null,
+    },
 
     // completion (weekly)
     doneByWeek: {}, // { [weekKey]: { [choreId]: true } }
@@ -22,7 +31,7 @@ export function defaultChoresData() {
     helperGrants: {}, // { [helperId]: { [kidId]: { minutes?:true, points?:true, grantedAt:number } } }
 
     // Game Time sessions (daily) - idempotent bookkeeping
-    // { [ymd]: { [kidId]: { totalMinutes:number, startedAt:number|null, endsAt:number|null, status:"ready"|"active"|"ended", blockedAt?:number|null } } }
+    // { [ymd]: { [kidId]: { totalMinutes:number, startedAt:number|null, endsAt:number|null, status:"ready"|"active"|"paused"|"ended", blockedAt?:number|null } } }
     gameTimeByDay: {},
 
     // UI
@@ -45,6 +54,13 @@ export function normalizeChoresData(raw) {
 
   const people = Array.isArray(s.people) ? s.people : [];
   const chores = Array.isArray(s.chores) ? s.chores : [];
+
+  const choreBank = Array.isArray(s.choreBank) ? s.choreBank : [];
+  const planner = s.planner && typeof s.planner === "object" ? s.planner : {};
+  const plannerPlan = planner.plan && typeof planner.plan === "object" ? planner.plan : {};
+  const plannerLastPublishedAt =
+    planner.lastPublishedAt === null || planner.lastPublishedAt === undefined ? null : Number(planner.lastPublishedAt) || null;
+
   const doneByWeek = s.doneByWeek && typeof s.doneByWeek === "object" ? s.doneByWeek : {};
 
   const helperTasks = Array.isArray(s.helperTasks) ? s.helperTasks : [];
@@ -58,7 +74,6 @@ export function normalizeChoresData(raw) {
     settings.internetMinutesOnDailyComplete && typeof settings.internetMinutesOnDailyComplete === "object"
       ? settings.internetMinutesOnDailyComplete
       : {};
-
   const gameTimeMinutesOnDailyComplete =
     settings.gameTimeMinutesOnDailyComplete && typeof settings.gameTimeMinutesOnDailyComplete === "object"
       ? settings.gameTimeMinutesOnDailyComplete
@@ -80,11 +95,23 @@ export function normalizeChoresData(raw) {
     ...s,
     version: CHORES_SCHEMA_VERSION,
     people: mergedPeople,
+
     chores: chores.map((c) => normalizeChore(c)).filter(Boolean),
+
+    // planner
+    choreBank: choreBank.map((b) => normalizeBankChore(b)).filter(Boolean),
+    planner: {
+      plan: normalizePlannerPlan(plannerPlan, mergedPeople),
+      lastPublishedAt: plannerLastPublishedAt,
+    },
+
     doneByWeek,
+
     helperTasks: helperTasks.map((t) => normalizeHelperTask(t)).filter(Boolean),
     helperGrants,
+
     gameTimeByDay,
+
     settings: {
       ...base.settings,
       ...settings,
@@ -95,7 +122,6 @@ export function normalizeChoresData(raw) {
 
 function normalizeChore(c) {
   if (!c || typeof c !== "object") return null;
-
   return {
     id: String(c.id || ""),
     day: String(c.day || "Monday"),
@@ -118,7 +144,6 @@ function normalizeHelperTask(t) {
   const status = t.status === "completed" || t.status === "expired" ? t.status : "active";
 
   const expiresAt = t.expiresAt === null || t.expiresAt === undefined ? null : Number(t.expiresAt) || null;
-
   const completedBy = Array.isArray(t.completedBy) ? t.completedBy.map(String) : [];
 
   return {
@@ -134,6 +159,38 @@ function normalizeHelperTask(t) {
   };
 }
 
+function normalizeBankChore(b) {
+  if (!b || typeof b !== "object") return null;
+  const tags = Array.isArray(b.tags) ? b.tags.map(String).map((t) => t.trim()).filter(Boolean) : [];
+  return {
+    id: String(b.id || ""),
+    title: String(b.title || ""),
+    tags,
+    createdAt: Number(b.createdAt || 0) || 0,
+  };
+}
+
+function normalizePlannerPlan(plan, people) {
+  const out = {};
+  const pset = new Set((people || []).map(String));
+  const obj = plan && typeof plan === "object" ? plan : {};
+
+  for (const day of DAYS) {
+    const perDay = obj[day] && typeof obj[day] === "object" ? obj[day] : {};
+    const outDay = {};
+
+    for (const person of Object.keys(perDay)) {
+      if (!pset.has(person)) continue;
+      const arr = Array.isArray(perDay[person]) ? perDay[person].map(String).filter(Boolean) : [];
+      if (arr.length) outDay[person] = arr;
+    }
+
+    if (Object.keys(outDay).length) out[day] = outDay;
+  }
+
+  return out;
+}
+
 /**
  * Week key based on Monday start (YYYY-MM-DD for Monday of that week)
  */
@@ -142,6 +199,7 @@ export function getWeekKey(d = new Date()) {
   const day = (date.getDay() + 6) % 7; // Monday=0..Sunday=6
   date.setDate(date.getDate() - day);
   date.setHours(0, 0, 0, 0);
+
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const dd = String(date.getDate()).padStart(2, "0");
@@ -171,28 +229,34 @@ export function ymdFromDate(d = new Date()) {
 export function groupChoresByDay(chores) {
   const byDay = {};
   for (const d of DAYS) byDay[d] = [];
+
   for (const c of chores || []) {
     if (!c) continue;
     if (!byDay[c.day]) byDay[c.day] = [];
     byDay[c.day].push(c);
   }
+
   for (const d of Object.keys(byDay)) {
     byDay[d].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   }
+
   return byDay;
 }
 
 export function groupChoresByPerson(chores, people) {
   const map = {};
   for (const p of people || []) map[p] = [];
+
   for (const c of chores || []) {
     if (!c) continue;
     if (!map[c.person]) map[c.person] = [];
     map[c.person].push(c);
   }
+
   for (const p of Object.keys(map)) {
     map[p].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   }
+
   return map;
 }
 

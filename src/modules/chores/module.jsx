@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+// src/modules/chores/module.jsx
+import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { ClipboardList, X, Plus, Check, Trash2, Timer } from "lucide-react";
+import { ClipboardList, X, Plus, Timer, Settings, Lock } from "lucide-react";
 import {
   DAYS,
   PEOPLE_DEFAULTS,
@@ -16,8 +17,7 @@ import {
   isHelperExpired,
 } from "./helpers.js";
 
-import { getRewardsData, unlockParent, isParentUnlocked, defaultRewardsData } from "../rewards/helpers.js";
-import { exportChoresToXml, importChoresFromXml } from "./xml.js";
+import { unlockParent } from "../rewards/helpers.js";
 
 // -----------------------------
 // lightweight global toggle
@@ -126,88 +126,6 @@ function useModuleData(ctx, defaultFn) {
 }
 
 // -----------------------------
-// Rewards bridge (event-driven) — used ONLY for helper tasks now
-// -----------------------------
-function emitRewardsCredit(ctx, { kidId, currency, amount, sourceRef, reason, metadata }) {
-  const bus = getBus(ctx);
-  bus?.emit?.("REWARDS/CREDIT", {
-    kidId,
-    currency,
-    amount: Number(amount) || 0,
-    sourceModule: "chores",
-    sourceRef,
-    reason: reason || "",
-    metadata: metadata || {},
-  });
-}
-
-function emitRewardsDebit(ctx, { kidId, currency, amount, sourceRef, reason, metadata }) {
-  const bus = getBus(ctx);
-  bus?.emit?.("REWARDS/DEBIT", {
-    kidId,
-    currency,
-    amount: Number(amount) || 0,
-    sourceModule: "chores",
-    sourceRef,
-    reason: reason || "",
-    metadata: metadata || {},
-  });
-}
-
-// -----------------------------
-// Network bridge (event + API call)
-// -----------------------------
-async function allowKidsInternet(ctx, { minutes = 0, kidId = null, sourceRef = "" } = {}) {
-  const bus = getBus(ctx);
-
-  // Event for in-app wiring (Network module can listen)
-  bus?.emit?.("NETWORK/KIDS/ON", {
-    minutes: Number(minutes) || 0,
-    kidId: kidId || null,
-    sourceModule: "chores",
-    sourceRef: sourceRef || "",
-    at: Date.now(),
-  });
-
-  // Direct API
-  try {
-    const payload = { sourceModule: "chores", action: "on", minutes: Number(minutes) || 0, kidId: kidId || null, sourceRef: sourceRef || "" };
-    console.log("[CHORES] POST /api/v1/network/kids/on", payload);
-    const res = await fetch("/api/v1/network/kids/on", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify(payload),
-    });
-    const text = await res.text();
-    console.log("[CHORES] kids/on =>", res.status, text);
-    if (!res.ok) throw new Error(`${res.status} ${text}`);
-  } catch (e) {
-    console.warn("[CHORES] allowKidsInternet fetch failed", e);
-  }
-}
-
-async function blockKidsInternet(ctx, { sourceRef = "" } = {}) {
-  const bus = getBus(ctx);
-  bus?.emit?.("NETWORK/KIDS/OFF", { sourceModule: "chores", sourceRef: sourceRef || "", at: Date.now() });
-  try {
-    const payload = { sourceModule: "chores", action: "off", sourceRef: sourceRef || "" };
-    console.log("[CHORES] POST /api/v1/network/kids/off", payload);
-    const res = await fetch("/api/v1/network/kids/off", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: JSON.stringify(payload),
-    });
-    const text = await res.text();
-    console.log("[CHORES] kids/off =>", res.status, text);
-    if (!res.ok) throw new Error(`${res.status} ${text}`);
-  } catch (e) {
-    console.warn("[CHORES] blockKidsInternet fetch failed", e);
-  }
-}
-
-// -----------------------------
 // helpers
 // -----------------------------
 function sortWeekList(list) {
@@ -255,30 +173,12 @@ function msToClock(ms) {
 }
 
 // -----------------------------
-// Parent gate (uses Rewards unlock)
+// Parent gate (session-based)
 // -----------------------------
-function ParentGate({ ctx, title = "Parent", children, onCancel, onUnlocked }) {
+function ParentGate({ ctx, title = "Settings", unlocked, onCancel, onUnlocked, children }) {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
-  const [localUnlocked, setLocalUnlocked] = useState(false);
-  const [rev, setRev] = useState(0);
 
-  const s = ctx?.store;
-
-  const rewardsData = useMemo(() => {
-    if (s?.getModuleData) return s.getModuleData("rewards", defaultRewardsData());
-    return getRewardsData(ctx);
-  }, [ctx, s, rev]);
-
-  useEffect(() => {
-    const s = ctx?.store;
-    if (!s || typeof s.subscribe !== "function") return;
-    const unsub = s.subscribe(() => setRev((r) => r + 1));
-    return () => unsub?.();
-  }, [ctx]);
-
-  // Keep localUnlocked for the session; do not auto-lock when data updates.
-  const unlocked = localUnlocked || isParentUnlocked(rewardsData);
   if (unlocked) return children;
 
   const handleUnlock = () => {
@@ -288,8 +188,6 @@ function ParentGate({ ctx, title = "Parent", children, onCancel, onUnlocked }) {
       return;
     }
     setErr("");
-    setLocalUnlocked(true);
-    setRev((r) => r + 1);
     try {
       onUnlocked?.();
     } catch {}
@@ -297,7 +195,7 @@ function ParentGate({ ctx, title = "Parent", children, onCancel, onUnlocked }) {
 
   return (
     <div className="rounded-3xl bg-white/10 backdrop-blur-xl border border-white/20 p-5">
-      <div className="text-white text-lg font-semibold">{title} required</div>
+      <div className="text-white text-lg font-semibold">{title} locked</div>
       <div className="text-white/60 text-sm mt-1">Enter the parent password (same as Rewards).</div>
 
       <div className="mt-4 flex gap-2">
@@ -361,157 +259,160 @@ function helperGrantKey(helperId, kidId, currency) {
   return `helper:${helperId}:${kidId}:${currency}`;
 }
 
-function awardHelperTask(ctx, choresData, helperTask, completedByKidIds) {
-  const s0 = normalizeChoresData(choresData);
-  const s = syncHelperExpiry(s0);
-  const cur = (s.helperTasks || []).find((t) => t.id === helperTask.id);
-  if (!cur || cur.status !== "active") return s;
-
-  const minutes = Number(cur.reward?.minutes || 0) || 0;
-  const points = Number(cur.reward?.points || 0) || 0;
-
-  const nextGrants = { ...(s.helperGrants || {}) };
-  const perHelper = { ...(nextGrants[cur.id] || {}) };
-
-  for (const kidId of completedByKidIds) {
-    if (kidId !== "harvey" && kidId !== "brady") continue;
-    const perKid = { ...(perHelper[kidId] || {}) };
-
-    if (minutes > 0 && !perKid.minutes) {
-      emitRewardsCredit(ctx, {
-        kidId,
-        currency: "minutes",
-        amount: minutes,
-        sourceRef: helperGrantKey(cur.id, kidId, "minutes"),
-        reason: `Helper: ${cur.title}`,
-        metadata: { helperId: cur.id, title: cur.title },
-      });
-      perKid.minutes = true;
-    }
-    if (points > 0 && !perKid.points) {
-      emitRewardsCredit(ctx, {
-        kidId,
-        currency: "points",
-        amount: points,
-        sourceRef: helperGrantKey(cur.id, kidId, "points"),
-        reason: `Helper: ${cur.title}`,
-        metadata: { helperId: cur.id, title: cur.title },
-      });
-      perKid.points = true;
-    }
-
-    if (perKid.minutes || perKid.points) {
-      perKid.grantedAt = Date.now();
-      perHelper[kidId] = perKid;
-    }
-  }
-
-  nextGrants[cur.id] = perHelper;
-
-  const nextTasks = (s.helperTasks || []).map((t) =>
-    t.id === cur.id
-      ? { ...t, status: "completed", completedAt: Date.now(), completedBy: completedByKidIds.slice() }
-      : t
-  );
-
-  return { ...s, helperGrants: nextGrants, helperTasks: nextTasks };
+function emitRewardsCredit(ctx, { kidId, currency, amount, sourceRef, reason, metadata }) {
+  const bus = getBus(ctx);
+  bus?.emit?.("REWARDS/CREDIT", {
+    kidId,
+    currency,
+    amount: Number(amount) || 0,
+    sourceModule: "chores",
+    sourceRef,
+    reason: reason || "",
+    metadata: metadata || {},
+  });
 }
-
-function reverseHelperTaskIfCompleted(ctx, choresData, helperTaskId) {
-  const s0 = normalizeChoresData(choresData);
-  const s = syncHelperExpiry(s0);
-
-  const task = (s.helperTasks || []).find((t) => t.id === helperTaskId);
-  if (!task) return s;
-  if (task.status !== "completed") return s;
-
-  const minutes = Number(task.reward?.minutes || 0) || 0;
-  const points = Number(task.reward?.points || 0) || 0;
-
-  const perHelper = s.helperGrants?.[task.id] || {};
-  for (const kidId of Object.keys(perHelper)) {
-    const perKid = perHelper[kidId] || {};
-    if (minutes > 0 && perKid.minutes) {
-      emitRewardsDebit(ctx, {
-        kidId,
-        currency: "minutes",
-        amount: minutes,
-        sourceRef: helperGrantKey(task.id, kidId, "minutes"),
-        reason: `Reversed helper: ${task.title}`,
-        metadata: { helperId: task.id, title: task.title },
-      });
-    }
-    if (points > 0 && perKid.points) {
-      emitRewardsDebit(ctx, {
-        kidId,
-        currency: "points",
-        amount: points,
-        sourceRef: helperGrantKey(task.id, kidId, "points"),
-        reason: `Reversed helper: ${task.title}`,
-        metadata: { helperId: task.id, title: task.title },
-      });
-    }
-  }
-
-  const nowMs = Date.now();
-  const expired = task.expiresAt && nowMs > task.expiresAt;
-
-  const nextTasks = (s.helperTasks || []).map((t) =>
-    t.id === task.id ? { ...t, status: expired ? "expired" : "active", completedAt: null, completedBy: [] } : t
-  );
-
-  const nextGrants = { ...(s.helperGrants || {}) };
-  delete nextGrants[task.id];
-
-  return { ...s, helperTasks: nextTasks, helperGrants: nextGrants };
+function emitRewardsDebit(ctx, { kidId, currency, amount, sourceRef, reason, metadata }) {
+  const bus = getBus(ctx);
+  bus?.emit?.("REWARDS/DEBIT", {
+    kidId,
+    currency,
+    amount: Number(amount) || 0,
+    sourceModule: "chores",
+    sourceRef,
+    reason: reason || "",
+    metadata: metadata || {},
+  });
 }
 
 // -----------------------------
-// Daily completion + Game Time
+// Network bridge (event + API call)
 // -----------------------------
-function getDailyCompletionState(data, baseDate, person) {
-  const kidId = mapPersonToKidId(person);
-  if (!kidId) return { kidId: null, total: 0, done: 0, allDone: false };
+async function allowKidsInternet(ctx, { minutes = 0, kidId = null, sourceRef = "" } = {}) {
+  const bus = getBus(ctx);
 
-  const choresForDay = getChoresForDateWithDone(data, baseDate).filter((c) => c.person === person);
-  const total = choresForDay.length;
-  const done = choresForDay.filter((c) => c.done).length;
-  return { kidId, total, done, allDone: total > 0 && done === total };
+  // Event for in-app wiring (Network module can listen)
+  bus?.emit?.("NETWORK/KIDS/ON", {
+    minutes: Number(minutes) || 0,
+    kidId: kidId || null,
+    sourceModule: "chores",
+    sourceRef: sourceRef || "",
+    at: Date.now(),
+  });
+
+  // Direct API try
+  try {
+    const payload = {
+      sourceModule: "chores",
+      action: "on",
+      minutes: Number(minutes) || 0,
+      kidId: kidId || null,
+      sourceRef: sourceRef || "",
+    };
+    console.log("[CHORES] POST /api/v1/network/kids/on", payload);
+    const res = await fetch("/api/v1/network/kids/on", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    console.log("[CHORES] kids/on =>", res.status, text);
+    if (!res.ok) throw new Error(`${res.status} ${text}`);
+  } catch (e) {
+    console.warn("[CHORES] allowKidsInternet fetch failed", e);
+  }
 }
 
+async function blockKidsInternet(ctx, { sourceRef = "" } = {}) {
+  const bus = getBus(ctx);
+
+  // Event for in-app wiring
+  bus?.emit?.("NETWORK/KIDS/OFF", {
+    sourceModule: "chores",
+    sourceRef: sourceRef || "",
+    at: Date.now(),
+  });
+
+  // Direct API try
+  try {
+    const payload = {
+      sourceModule: "chores",
+      action: "off",
+      sourceRef: sourceRef || "",
+    };
+    console.log("[CHORES] POST /api/v1/network/kids/off", payload);
+    const res = await fetch("/api/v1/network/kids/off", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text();
+    console.log("[CHORES] kids/off =>", res.status, text);
+    if (!res.ok) throw new Error(`${res.status} ${text}`);
+  } catch (e) {
+    console.warn("[CHORES] blockKidsInternet fetch failed", e);
+  }
+}
+
+// -----------------------------
+// Game Time helpers
+// -----------------------------
 function getGameTimeSession(data, ymd, kidId) {
-  const perDay = data.gameTimeByDay?.[ymd] || {};
-  return perDay?.[kidId] || null;
+  return data.gameTimeByDay?.[ymd]?.[kidId] || null;
 }
 
-function setGameTimeSession(data, ymd, kidId, patchSession) {
+function setGameTimeSession(data, ymd, kidId, updates) {
   const perDay = { ...(data.gameTimeByDay?.[ymd] || {}) };
-  const cur = perDay[kidId] || {
-    totalMinutes: 0,
-    startedAt: null,
-    endsAt: null,
-    status: "ready", // "ready" | "active" | "paused" | "ended"
-    blockedAt: null,
-    remainingMs: null,
-    pausedAt: null,
+  const cur = perDay[kidId] || {};
+  perDay[kidId] = { ...cur, ...updates };
+
+  return {
+    ...data,
+    gameTimeByDay: {
+      ...(data.gameTimeByDay || {}),
+      [ymd]: perDay,
+    },
   };
-  perDay[kidId] = { ...cur, ...(patchSession || {}) };
-  return { ...data, gameTimeByDay: { ...(data.gameTimeByDay || {}), [ymd]: perDay } };
+}
+
+function getDailyCompletionState(data, dateOrYmd, person) {
+  const normalized = normalizeChoresData(data);
+  const date = typeof dateOrYmd === "string" ? dateFromYMD(dateOrYmd) : dateOrYmd;
+  const dayName = getDayName(date);
+  const weekKey = getWeekKey(date);
+
+  const allChoresForDay = (normalized.chores || []).filter((c) => c.day === dayName && c.person === person);
+  const doneMap = normalized.doneByWeek?.[weekKey] || {};
+  const allDone = allChoresForDay.length > 0 && allChoresForDay.every((c) => doneMap[c.id]);
+
+  const kidId = mapPersonToKidId(person);
+
+  return { allDone, person, kidId, total: allChoresForDay.length };
 }
 
 // -----------------------------
-// Module root
+// Main Module
 // -----------------------------
 export default function ChoresModule({ ctx }) {
   const enabled = useChoreModeEnabled();
   const bus = getBus(ctx);
 
   const { data: rawData, patch } = useModuleData(ctx, defaultChoresData);
-  const data0 = useMemo(() => normalizeChoresData(rawData), [rawData]);
-  const data = useMemo(() => syncHelperExpiry(data0), [data0]);
+  const data = useMemo(() => normalizeChoresData(rawData), [rawData]);
 
   const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
+  const [viewMode, setViewMode] = useState("day");
   const [pendingConfirm, setPendingConfirm] = useState(null);
+
+  const baseDate = useMemo(() => {
+    return selectedYMD ? dateFromYMD(selectedYMD) : new Date();
+  }, [selectedYMD]);
+
+  const ymd = useMemo(() => ymdFromDate(baseDate), [baseDate]);
+  const weekKey = useMemo(() => getWeekKey(baseDate), [baseDate]);
+
+  const people = data.people || PEOPLE_DEFAULTS;
 
   useEffect(() => {
     const handler = (payload) => {
@@ -520,110 +421,12 @@ export default function ChoresModule({ ctx }) {
           ? payload
           : typeof payload?.date === "string"
             ? payload.date
-            : typeof payload?.ymd === "string"
-              ? payload.ymd
-              : null;
-
-      if (ymd) {
-        setSelectedYMD(ymd);
-        sharedSet(ctx, { selectedDate: ymd });
-      }
+            : null;
+      if (ymd) setSelectedYMD(ymd);
     };
-
-    bus?.on?.("selectedDate:changed", handler);
-    return () => bus?.off?.("selectedDate:changed", handler);
-  }, [bus, ctx]);
-
-  const baseDate = useMemo(() => {
-    if (!selectedYMD) return new Date();
-    const dt = dateFromYMD(selectedYMD);
-    return dt instanceof Date && !isNaN(dt) ? dt : new Date();
-  }, [selectedYMD]);
-
-  const viewMode = data.viewMode === "week" ? "week" : "day";
-  const setViewMode = (mode) => patch({ viewMode: mode });
-
-  const people = data.people || [];
-  const ymd = useMemo(() => ymdFromDate(baseDate || new Date()), [baseDate]);
-
-  const activeHelpers = useMemo(
-    () => (data.helperTasks || []).filter((t) => t.status === "active"),
-    [data.helperTasks]
-  );
-
-  const cardModel = useMemo(() => {
-    const weekKey = getWeekKey(baseDate);
-    if (viewMode === "day") {
-      const choresForDay = getChoresForDateWithDone(data, baseDate);
-      const byPerson = groupChoresByPerson(choresForDay, people);
-      const total = choresForDay.length;
-      const done = choresForDay.filter((c) => c.done).length;
-
-      const helpersActive = (data.helperTasks || []).filter((t) => t.status === "active").length;
-
-      return {
-        mode: "day",
-        title: getDayName(baseDate),
-        subtitle: selectedYMD ? selectedYMD : "Today",
-        weekKey,
-        total,
-        done,
-        byPerson,
-        helpersActive,
-      };
-    }
-
-    const doneMap = data.doneByWeek?.[weekKey] || {};
-    const chores = (data.chores || []).map((c) => ({ ...c, done: !!doneMap[c.id] }));
-    const rawByPerson = groupChoresByPerson(chores, people);
-    const byPerson = {};
-    for (const person of people) byPerson[person] = sortWeekList(rawByPerson[person] || []);
-
-    const helpersActive = (data.helperTasks || []).filter((t) => t.status === "active").length;
-
-    return {
-      mode: "week",
-      title: "Week",
-      subtitle: `Week of ${weekKey}`,
-      weekKey,
-      total: chores.length,
-      done: chores.filter((c) => c.done).length,
-      byPerson,
-      helpersActive,
-    };
-  }, [viewMode, data, baseDate, people, selectedYMD]);
-
-  useEffect(() => {
-    const normalized = normalizeChoresData(rawData);
-    const selected = sharedGetSelectedYMD(ctx);
-    const dt = selected ? dateFromYMD(selected) : new Date();
-    const choresForSelectedDate = getChoresForDateWithDone(normalized, dt);
-
-    sharedSet(ctx, {
-      choresData: normalized,
-      choresPeople: normalized.people,
-      choresByDay: groupChoresByDay(normalized.chores),
-      choresForSelectedDate,
-      helperTasks: normalized.helperTasks || [],
-    });
-
-    bus?.emit?.("chores:changed", { data: normalized });
-    bus?.emit?.("choresForDate:changed", { selectedDate: selected, chores: choresForSelectedDate });
-  }, [rawData, ctx, bus]);
-
-  // NOTE: Weekly chores no longer grant rewards. Just mark done.
-  const markDoneChild = (weekKey, chore) => {
-    const curDone = !!(data.doneByWeek?.[weekKey]?.[chore.id]);
-    if (curDone) return;
-
-    const nextWeekDone = { ...(data.doneByWeek?.[weekKey] || {}), [chore.id]: true };
-    const nextDoneByWeek = { ...(data.doneByWeek || {}), [weekKey]: nextWeekDone };
-
-    patch({
-      ...data,
-      doneByWeek: nextDoneByWeek,
-    });
-  };
+    const unsub = bus?.on?.("calendar:dateSelected", handler);
+    return () => unsub?.();
+  }, [bus]);
 
   // Main-screen Game Time button state tick
   const [, forceTick] = useState(0);
@@ -632,9 +435,34 @@ export default function ChoresModule({ ctx }) {
     return () => clearInterval(t);
   }, []);
 
-  // NOTE: Game time session expiry check is now handled explicitly in user actions,
-  // not auto-saved on every render. The checkGameTimeExpiry helper can be called
-  // when needed (e.g., when user clicks pause/resume/view status).
+  // Best-effort: if we have an active session that has ended, mark ended + block once
+  useEffect(() => {
+    const now = Date.now();
+    let next = data;
+    let changed = false;
+
+    const perDay = data.gameTimeByDay?.[ymd] || {};
+    for (const kidId of Object.keys(perDay)) {
+      const s = perDay[kidId];
+      if (!s) continue;
+      if (s.status !== "active") continue;
+      if (!s.endsAt) continue;
+      if (now < s.endsAt) continue;
+
+      changed = true;
+      next = setGameTimeSession(next, ymd, kidId, { status: "ended" });
+
+      // block once
+      const ended = getGameTimeSession(next, ymd, kidId);
+      if (!ended?.blockedAt) {
+        next = setGameTimeSession(next, ymd, kidId, { blockedAt: Date.now() });
+        blockKidsInternet(ctx, { sourceRef: `gametime:end:${ymd}:${kidId}` });
+      }
+    }
+
+    if (changed) patch(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, ymd]);
 
   const startGameTimeForKid = async (person) => {
     const daily = getDailyCompletionState(data, baseDate || new Date(), person);
@@ -705,7 +533,7 @@ export default function ChoresModule({ ctx }) {
       endsAt,
       remainingMs: null,
       pausedAt: null,
-      blockedAt: null, // allow end logic to block again if needed
+      blockedAt: null,
     });
     patch(next);
 
@@ -717,29 +545,96 @@ export default function ChoresModule({ ctx }) {
     });
   };
 
+  const activeHelpers = useMemo(
+    () => (data.helperTasks || []).filter((t) => t.status === "active"),
+    [data.helperTasks]
+  );
+
+  const cardModel = useMemo(() => {
+    if (viewMode === "day") {
+      const choresForDay = getChoresForDateWithDone(data, baseDate);
+      const byPerson = groupChoresByPerson(choresForDay, people);
+      const total = choresForDay.length;
+      const done = choresForDay.filter((c) => c.done).length;
+      const helpersActive = (data.helperTasks || []).filter((t) => t.status === "active").length;
+
+      return {
+        mode: "day",
+        title: getDayName(baseDate),
+        subtitle: selectedYMD ? selectedYMD : "Today",
+        weekKey,
+        total,
+        done,
+        byPerson,
+        helpersActive,
+      };
+    }
+
+    const doneMap = data.doneByWeek?.[weekKey] || {};
+    const chores = (data.chores || []).map((c) => ({ ...c, done: !!doneMap[c.id] }));
+    const rawByPerson = groupChoresByPerson(chores, people);
+    const byPerson = {};
+    for (const person of people) byPerson[person] = sortWeekList(rawByPerson[person] || []);
+
+    const helpersActive = (data.helperTasks || []).filter((t) => t.status === "active").length;
+
+    return {
+      mode: "week",
+      title: "Week",
+      subtitle: `Week of ${weekKey}`,
+      weekKey,
+      total: chores.length,
+      done: chores.filter((c) => c.done).length,
+      byPerson,
+      helpersActive,
+    };
+  }, [viewMode, data, baseDate, people, selectedYMD, weekKey]);
+
+  const markDoneChild = (wk, chore) => {
+    const curDone = !!(data.doneByWeek?.[wk]?.[chore.id]);
+    if (curDone) return;
+
+    const nextWeekDone = { ...(data.doneByWeek?.[wk] || {}), [chore.id]: true };
+    const nextDoneByWeek = { ...(data.doneByWeek || {}), [wk]: nextWeekDone };
+    patch({ ...data, doneByWeek: nextDoneByWeek });
+  };
+
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-2">
         <ClipboardList size={18} />
         <div className="font-semibold">Chores</div>
 
-        <div className="ml-auto flex items-center gap-1">
+        {/* SETTINGS button moved to top-right */}
+        <div className="ml-auto flex items-center gap-2">
           <button
-            onClick={() => setViewMode("day")}
-            className={`px-2 py-1 rounded-lg text-xs border transition-all ${
-              viewMode === "day" ? "bg-white/20 border-white/30" : "bg-white/5 border-white/10 hover:bg-white/10"
-            }`}
+            onClick={() => setChoreModeEnabled(true)}
+            className="px-2.5 py-1.5 rounded-lg text-xs border transition-all bg-white/10 border-white/15 hover:bg-white/15 flex items-center gap-1.5"
+            aria-pressed={enabled}
+            title="Settings"
           >
-            Day
+            <Settings className="w-4 h-4" />
+            Settings
           </button>
-          <button
-            onClick={() => setViewMode("week")}
-            className={`px-2 py-1 rounded-lg text-xs border transition-all ${
-              viewMode === "week" ? "bg-white/20 border-white/30" : "bg-white/5 border-white/10 hover:bg-white/10"
-            }`}
-          >
-            Week
-          </button>
+
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setViewMode("day")}
+              className={`px-2 py-1 rounded-lg text-xs border transition-all ${
+                viewMode === "day" ? "bg-white/20 border-white/30" : "bg-white/5 border-white/10 hover:bg-white/10"
+              }`}
+            >
+              Day
+            </button>
+            <button
+              onClick={() => setViewMode("week")}
+              className={`px-2 py-1 rounded-lg text-xs border transition-all ${
+                viewMode === "week" ? "bg-white/20 border-white/30" : "bg-white/5 border-white/10 hover:bg-white/10"
+              }`}
+            >
+              Week
+            </button>
+          </div>
         </div>
       </div>
 
@@ -878,9 +773,7 @@ export default function ChoresModule({ ctx }) {
                           {formatInlineReward(t.reward)}
                         </div>
                         {t.expiresAt && (
-                          <div className="text-xs opacity-50 mt-0.5">
-                            Expires: {new Date(t.expiresAt).toLocaleDateString()}
-                          </div>
+                          <div className="text-xs opacity-50 mt-0.5">Expires: {new Date(t.expiresAt).toLocaleDateString()}</div>
                         )}
                       </div>
                       <button
@@ -896,14 +789,6 @@ export default function ChoresModule({ ctx }) {
             </div>
           )}
         </div>
-
-        <button
-          onClick={() => setChoreModeEnabled(true)}
-          className="w-full rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 px-3 py-2 text-sm transition-all"
-          aria-pressed={enabled}
-        >
-          Open chores
-        </button>
       </div>
 
       <ChoreModeOverlay ctx={ctx} data={data} patch={patch} baseDate={baseDate} onChildMarkDone={markDoneChild} />
@@ -940,7 +825,7 @@ export default function ChoresModule({ ctx }) {
 }
 
 // -----------------------------
-// Overlay
+// Overlay (Settings + Planner + Helper + Weekly chores)
 // -----------------------------
 function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const enabled = useChoreModeEnabled();
@@ -951,7 +836,6 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const chores = normalized.chores || [];
 
   const weekKey = useMemo(() => getWeekKey(baseDate || new Date()), [baseDate]);
-  const doneMap = normalized.doneByWeek?.[weekKey] || {};
   const ymd = useMemo(() => ymdFromDate(baseDate || new Date()), [baseDate]);
 
   const [parentPanelOpen, setParentPanelOpen] = useState(false);
@@ -959,11 +843,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const [pendingConfirm, setPendingConfirm] = useState(null);
 
   // Parent tab toggle
-  const [parentTab, setParentTab] = useState("chores"); // "chores" | "helper"
-
-  // Import/Export state
-  const [ioError, setIoError] = useState("");
-  const fileInputRef = useRef(null);
+  const [parentTab, setParentTab] = useState("chores"); // "chores" | "helper" | "planner"
 
   // Add weekly chore form (parent)
   const [newName, setNewName] = useState("");
@@ -987,6 +867,9 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   const [helperRewardPoints, setHelperRewardPoints] = useState(0);
   const [helperExpiryDate, setHelperExpiryDate] = useState(""); // YYYY-MM-DD
 
+  // Preview toggle inside settings screen (right panel for chores tab)
+  const [settingsChoresViewMode, setSettingsChoresViewMode] = useState("day"); // "day"|"week"
+
   useEffect(() => {
     if (!enabled) return;
     const dayName = getDayName(baseDate || new Date());
@@ -1009,15 +892,26 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   }, [enabled]);
 
   const selectedDayForView = (newDays && newDays.length && newDays[0]) || getDayName(baseDate || new Date());
-  const todaysChores = useMemo(() => chores.filter((c) => c.day === selectedDayForView), [chores, newDays]);
-  const todaysChoresByPerson = useMemo(() => groupChoresByPerson(todaysChores, people), [todaysChores, people]);
 
-  const activeHelpers = useMemo(
-    () => (normalized.helperTasks || []).filter((t) => t.status === "active"),
-    [normalized.helperTasks]
-  );
-  const expiredHelpers = useMemo(
-    () => (normalized.helperTasks || []).filter((t) => t.status === "expired"),
+  const todaysChores = useMemo(() => chores.filter((c) => c.day === selectedDayForView), [chores, selectedDayForView]);
+  const todaysChoresWithDone = useMemo(() => {
+    const doneMap = normalized.doneByWeek?.[weekKey] || {};
+    return todaysChores.map((c) => ({ ...c, done: !!doneMap[c.id] }));
+  }, [todaysChores, normalized.doneByWeek, weekKey]);
+  const todaysChoresByPerson = useMemo(() => groupChoresByPerson(todaysChoresWithDone, people), [todaysChoresWithDone, people]);
+
+  const doneMapWeek = normalized.doneByWeek?.[weekKey] || {};
+  const weeklyChoresWithDone = useMemo(() => (normalized.chores || []).map((c) => ({ ...c, done: !!doneMapWeek[c.id] })), [normalized.chores, doneMapWeek]);
+  const weeklyByPerson = useMemo(() => {
+    const raw = groupChoresByPerson(weeklyChoresWithDone, people);
+    const out = {};
+    for (const p of people) out[p] = sortWeekList(raw[p] || []);
+    return out;
+  }, [weeklyChoresWithDone, people]);
+
+  const activeHelpers = useMemo(() => (normalized.helperTasks || []).filter((t) => t.status === "active"), [normalized.helperTasks]);
+  const inactiveHelpers = useMemo(
+    () => (normalized.helperTasks || []).filter((t) => t.status === "expired" || t.status === "completed"),
     [normalized.helperTasks]
   );
 
@@ -1076,7 +970,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     });
   };
 
-  // Parent: reset week (no reward reversing anymore)
+  // Parent: reset week (uncheck all)
   const parentResetWeek = () => {
     const nextGameTimeByDay = { ...(normalized.gameTimeByDay || {}) };
     if (ymd && Object.prototype.hasOwnProperty.call(nextGameTimeByDay, ymd)) {
@@ -1130,21 +1024,17 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     setHelperExpiryDate("");
   };
 
-  const parentReactivateHelper = (taskId, newExpiryDateStr = "") => {
-    const nextTasks = (normalized.helperTasks || []).map((t) => {
-      if (t.id !== taskId) return t;
-      const newExpiresAt = newExpiryDateStr ? toEndOfDayTs(newExpiryDateStr) : null;
-      return { ...t, status: "active", expiresAt: newExpiresAt };
-    });
-    patch({ ...normalized, helperTasks: nextTasks });
-  };
-
   const parentDeleteHelper = (taskId) => {
     const nextData = reverseHelperTaskIfCompleted(ctx, normalized, taskId);
     patch({
       ...nextData,
       helperTasks: (nextData.helperTasks || []).filter((t) => t.id !== taskId),
     });
+  };
+
+  const parentReactivateHelper = (taskId) => {
+    const next = reactivateHelperAsNewRun(normalized, taskId);
+    patch(next);
   };
 
   const saveParentSettings = () => {
@@ -1161,79 +1051,90 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     });
   };
 
-  const doExportXml = async () => {
-    try {
-      setIoError("");
-      const xml = exportChoresToXml(normalized);
-
-      // copy to clipboard if available
-      try {
-        await navigator.clipboard?.writeText?.(xml);
-      } catch {}
-
-      // download file
-      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `chores-export-${new Date().toISOString().slice(0, 10)}.xml`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      setIoError(e?.message || "Export failed.");
-    }
-  };
-
-  const doImportXmlText = (xmlText) => {
-    try {
-      setIoError("");
-      const imported = importChoresFromXml(xmlText);
-
-      // IMPORTANT: persist immediately (server-backed state)
-      patch(imported);
-
-      // close panel or keep open—your call
-    } catch (e) {
-      setIoError(e?.message || "Import failed.");
-    }
-  };
-
-  const onPickImportFile = async (file) => {
-    if (!file) return;
-    const text = await file.text();
-    doImportXmlText(text);
-  };
-
   if (!enabled) return null;
+
+  const showPlanner = parentPanelOpen && parentTab === "planner";
+  const showSettingsPanels = parentPanelOpen && parentTab !== "planner";
+
+  const openTab = (tab) => {
+    setParentTab(tab);
+    setParentPanelOpen(true);
+  };
+
+  const lockSession = () => {
+    setParentUnlockedSession(false);
+  };
 
   const overlayContent = (
     <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm">
       <div className="h-screen overflow-auto">
         <div className="min-h-screen flex flex-col p-4 md:p-8">
-          <div className="max-w-5xl mx-auto w-full flex-1">
+          <div className="max-w-6xl mx-auto w-full flex-1">
             <div className="flex items-center justify-between mb-6">
               <div className="flex items-center gap-3">
                 <div className="p-3 bg-white/10 rounded-2xl">
                   <ClipboardList className="w-6 h-6 text-white" />
                 </div>
                 <div>
-                  <div className="text-white text-2xl font-bold">Chores</div>
+                  <div className="text-white text-2xl font-bold">Chores settings</div>
                   <div className="text-white/60 text-sm">
                     Check chores • {selectedDayForView} • Week of {weekKey}
                   </div>
                 </div>
               </div>
 
+              {/* TOP TOOLBAR */}
               <div className="flex items-center gap-2">
+                <div className="hidden md:flex items-center gap-2 mr-2">
+                  <button
+                    onClick={() => openTab("chores")}
+                    className={`px-3 py-2 rounded-xl border text-sm transition-all ${
+                      parentPanelOpen && parentTab === "chores"
+                        ? "bg-white/20 border-white/30 text-white"
+                        : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                    }`}
+                  >
+                    Weekly chores
+                  </button>
+                  <button
+                    onClick={() => openTab("helper")}
+                    className={`px-3 py-2 rounded-xl border text-sm transition-all ${
+                      parentPanelOpen && parentTab === "helper"
+                        ? "bg-white/20 border-white/30 text-white"
+                        : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                    }`}
+                  >
+                    Daily helper
+                  </button>
+                  <button
+                    onClick={() => openTab("planner")}
+                    className={`px-3 py-2 rounded-xl border text-sm transition-all ${
+                      parentPanelOpen && parentTab === "planner"
+                        ? "bg-white/20 border-white/30 text-white"
+                        : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                    }`}
+                  >
+                    Chore planner
+                  </button>
+                </div>
+
                 <button
                   onClick={() => setParentPanelOpen((v) => !v)}
                   className="px-4 py-3 bg-white/10 rounded-xl text-white/90 hover:bg-white/20 transition-all text-sm border border-white/10"
-                  title="Parent tools"
+                  title="Settings panels"
                 >
-                  Parent
+                  Settings
                 </button>
+
+                {parentUnlockedSession ? (
+                  <button
+                    onClick={lockSession}
+                    className="px-3 py-3 bg-white/10 rounded-xl text-white/90 hover:bg-white/20 transition-all text-sm border border-white/10"
+                    title="Lock settings (requires password again)"
+                  >
+                    <Lock className="w-5 h-5" />
+                  </button>
+                ) : null}
 
                 <button
                   className="p-3 bg-white/10 backdrop-blur-lg rounded-xl hover:bg-white/20 transition-all"
@@ -1245,505 +1146,285 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-              {parentPanelOpen ? (
+            {/* PLANNER = FULL WORKSPACE */}
+            {showPlanner ? (
+              <ParentGate
+                ctx={ctx}
+                title="Settings"
+                unlocked={parentUnlockedSession}
+                onCancel={() => setParentPanelOpen(false)}
+                onUnlocked={() => setParentUnlockedSession(true)}
+              >
+                <PlannerWorkspace ctx={ctx} normalized={normalized} patch={patch} people={people} weekKey={weekKey} />
+              </ParentGate>
+            ) : showSettingsPanels ? (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                {/* LEFT: Settings input */}
                 <div className="self-start bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
                   <ParentGate
                     ctx={ctx}
-                    title="Parent tools"
+                    title="Settings"
+                    unlocked={parentUnlockedSession}
                     onCancel={() => setParentPanelOpen(false)}
                     onUnlocked={() => setParentUnlockedSession(true)}
                   >
-                    <div className="space-y-4">
-                      {/* TOGGLE */}
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => setParentTab("chores")}
-                          className={`flex-1 px-3 py-2 rounded-xl border text-sm transition-all ${
-                            parentTab === "chores"
-                              ? "bg-white/20 border-white/30 text-white"
-                              : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
-                          }`}
-                        >
-                          Weekly chores
-                        </button>
-                        <button
-                          onClick={() => setParentTab("helper")}
-                          className={`flex-1 px-3 py-2 rounded-xl border text-sm transition-all ${
-                            parentTab === "helper"
-                              ? "bg-white/20 border-white/30 text-white"
-                              : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
-                          }`}
-                        >
-                          Daily helper
-                        </button>
-                      </div>
-
-                      {/* WEEKLY CHORES TAB */}
-                      {parentTab === "chores" ? (
-                        <div className="space-y-6">
-                          <div>
-                            <div className="text-white text-xl font-semibold mb-4">Add weekly chore</div>
-
-                            <div className="space-y-4">
-                              <div>
-                                <label className="text-white/70 text-sm mb-2 block">Day</label>
-
-                                <div className="mb-2 flex gap-2">
-                                  <button
-                                    onClick={() => setNewDays(DAYS.slice(0, 5))}
-                                    className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
-                                  >
-                                    Weekdays
-                                  </button>
-                                  <button
-                                    onClick={() => setNewDays(DAYS)}
-                                    className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
-                                  >
-                                    All days
-                                  </button>
-                                  <button
-                                    onClick={() => setNewDays([getDayName(baseDate || new Date())])}
-                                    className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
-                                  >
-                                    Today only
-                                  </button>
-                                </div>
-
-                                <div className="rounded-2xl bg-white/5 border border-white/10 p-3 grid grid-cols-2 gap-2">
-                                  {DAYS.map((d) => (
-                                    <label key={d} className="flex items-center gap-2 text-white/80 text-sm">
-                                      <input
-                                        type="checkbox"
-                                        checked={Array.isArray(newDays) && newDays.includes(d)}
-                                        onChange={() => {
-                                          const prev = new Set(newDays || []);
-                                          if (prev.has(d)) prev.delete(d);
-                                          else prev.add(d);
-                                          setNewDays(DAYS.filter((day) => prev.has(day)));
-                                        }}
-                                      />
-                                      {d}
-                                    </label>
-                                  ))}
-                                </div>
-                              </div>
-
-                              <div>
-                                <label className="text-white/70 text-sm mb-2 block">Person</label>
-                                <select
-                                  value={newPerson}
-                                  onChange={(e) => setNewPerson(e.target.value)}
-                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                    {parentTab === "chores" ? (
+                      <div className="space-y-6">
+                        <div>
+                          <div className="text-white text-xl font-semibold mb-4">Add weekly chore</div>
+                          <div className="space-y-4">
+                            <div>
+                              <label className="text-white/70 text-sm mb-2 block">Day</label>
+                              <div className="mb-2 flex gap-2 flex-wrap">
+                                <button
+                                  onClick={() => setNewDays(DAYS.slice(0, 5))}
+                                  className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
                                 >
-                                  {people.map((p) => (
-                                    <option key={p} value={p} className="bg-slate-900 text-white">
-                                      {p}
-                                    </option>
-                                  ))}
-                                  <option value="__custom__" className="bg-slate-900 text-white">
-                                    Other...
-                                  </option>
-                                </select>
-
-                                {newPerson === "__custom__" ? (
-                                  <input
-                                    type="text"
-                                    value={newPersonCustom}
-                                    onChange={(e) => setNewPersonCustom(e.target.value)}
-                                    placeholder="Type a name"
-                                    className="mt-2 w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                                  />
-                                ) : null}
+                                  Weekdays
+                                </button>
+                                <button
+                                  onClick={() => setNewDays(DAYS)}
+                                  className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                                >
+                                  All days
+                                </button>
+                                <button
+                                  onClick={() => setNewDays([getDayName(baseDate || new Date())])}
+                                  className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
+                                >
+                                  Today only
+                                </button>
                               </div>
 
-                              <div>
-                                <label className="text-white/70 text-sm mb-2 block">Chore</label>
+                              <div className="rounded-2xl bg-white/5 border border-white/10 p-3 grid grid-cols-2 gap-2">
+                                {DAYS.map((d) => (
+                                  <label key={d} className="flex items-center gap-2 text-white/80 text-sm">
+                                    <input
+                                      type="checkbox"
+                                      checked={Array.isArray(newDays) && newDays.includes(d)}
+                                      onChange={() => {
+                                        const prev = new Set(newDays || []);
+                                        if (prev.has(d)) prev.delete(d);
+                                        else prev.add(d);
+                                        setNewDays(DAYS.filter((day) => prev.has(day)));
+                                      }}
+                                    />
+                                    {d}
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="text-white/70 text-sm mb-2 block">Person</label>
+                              <select
+                                value={newPerson}
+                                onChange={(e) => setNewPerson(e.target.value)}
+                                className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                              >
+                                {people.map((p) => (
+                                  <option key={p} value={p} className="bg-slate-900 text-white">
+                                    {p}
+                                  </option>
+                                ))}
+                                <option value="__custom__" className="bg-slate-900 text-white">
+                                  Other...
+                                </option>
+                              </select>
+
+                              {newPerson === "__custom__" ? (
                                 <input
                                   type="text"
-                                  value={newName}
-                                  onChange={(e) => setNewName(e.target.value)}
-                                  onKeyDown={(e) => e.key === "Enter" && parentAddChore()}
-                                  placeholder="e.g., Take out trash"
-                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                                  value={newPersonCustom}
+                                  onChange={(e) => setNewPersonCustom(e.target.value)}
+                                  placeholder="Type a name"
+                                  className="mt-2 w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
                                 />
-                              </div>
-
-                              <button
-                                onClick={parentAddChore}
-                                className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
-                              >
-                                <Plus className="w-5 h-5" />
-                                Add chore
-                              </button>
+                              ) : null}
                             </div>
-                          </div>
 
-                          <div className="pt-2 border-t border-white/10">
+                            <div>
+                              <label className="text-white/70 text-sm mb-2 block">Chore</label>
+                              <input
+                                type="text"
+                                value={newName}
+                                onChange={(e) => setNewName(e.target.value)}
+                                onKeyDown={(e) => e.key === "Enter" && parentAddChore()}
+                                placeholder="e.g., Take out trash"
+                                className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
+                              />
+                            </div>
+
                             <button
-                              onClick={parentResetWeek}
-                              className="w-full px-3 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-white/70 hover:text-white/90 transition-all text-xs"
+                              onClick={parentAddChore}
+                              className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
                             >
-                              Reset week (uncheck all)
+                              <Plus className="w-5 h-5" />
+                              Add chore
                             </button>
                           </div>
                         </div>
-                      ) : null}
 
-                      {/* HELPER TAB */}
-                      {parentTab === "helper" ? (
-                        <div className="space-y-6">
-                          <div>
-                            <div className="text-white text-xl font-semibold mb-2">Daily Helper tasks</div>
-                            <div className="text-white/60 text-sm mb-4">
-                              One-off bonus tasks. Can expire. Rewards stay here.
-                            </div>
-
-                            <div className="space-y-4">
-                              <div>
-                                <label className="text-white/70 text-sm mb-2 block">Task title</label>
-                                <input
-                                  value={helperTitle}
-                                  onChange={(e) => setHelperTitle(e.target.value)}
-                                  placeholder="e.g., Help clean the garage"
-                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white placeholder-white/40"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="text-white/70 text-sm mb-2 block">Expires (optional)</label>
-                                <input
-                                  type="date"
-                                  value={helperExpiryDate}
-                                  onChange={(e) => setHelperExpiryDate(e.target.value)}
-                                  className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                                />
-                              </div>
-
-                              <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                                <div className="text-white/80 text-sm font-semibold mb-2">Assign to</div>
-                                <label className="flex items-center gap-2 text-white/80 text-sm">
-                                  <input
-                                    type="checkbox"
-                                    checked={helperAssignHarvey}
-                                    onChange={(e) => setHelperAssignHarvey(e.target.checked)}
-                                  />
-                                  Harvey
-                                </label>
-                                <label className="flex items-center gap-2 text-white/80 text-sm mt-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={helperAssignBrady}
-                                    onChange={(e) => setHelperAssignBrady(e.target.checked)}
-                                  />
-                                  Brady
-                                </label>
-                                <div className="text-white/40 text-xs mt-2">
-                                  If both are checked, both get the rewards.
-                                </div>
-                              </div>
-
-                              <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                                <div className="text-white/80 text-sm font-semibold mb-2">Bonus reward</div>
-                                <div className="grid grid-cols-2 gap-3">
-                                  <div>
-                                    <label className="text-white/70 text-xs block mb-1">Minutes</label>
-                                    <input
-                                      type="number"
-                                      value={helperRewardMinutes}
-                                      onChange={(e) => setHelperRewardMinutes(e.target.value)}
-                                      className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                                    />
-                                  </div>
-                                  <div>
-                                    <label className="text-white/70 text-xs block mb-1">Points</label>
-                                    <input
-                                      type="number"
-                                      value={helperRewardPoints}
-                                      onChange={(e) => setHelperRewardPoints(e.target.value)}
-                                      className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
-                                    />
-                                  </div>
-                                </div>
-                              </div>
-
-                              <button
-                                onClick={parentAddHelper}
-                                className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
-                              >
-                                <Plus className="w-5 h-5" />
-                                Add helper task
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                            <div className="text-white font-semibold mb-2">Expired helpers</div>
-                            {expiredHelpers.length ? (
-                              <div className="space-y-2">
-                                {expiredHelpers.map((t) => (
-                                  <div key={t.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
-                                    <div className="text-white/90 text-sm font-semibold">{t.title}</div>
-                                    <div className="text-white/60 text-xs">
-                                      Assigned: {(t.assignedTo || []).join(", ")}
-                                      {formatInlineReward(t.reward)}
-                                    </div>
-
-                                    <div className="mt-2 flex gap-2">
-                                      <button
-                                        onClick={() => parentReactivateHelper(t.id, "")}
-                                        className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
-                                      >
-                                        Reactivate
-                                      </button>
-                                      <button
-                                        onClick={() => parentDeleteHelper(t.id)}
-                                        className="px-3 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-200/20 text-red-100 text-sm"
-                                      >
-                                        Delete
-                                      </button>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="text-white/40 text-sm">None</div>
-                            )}
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {/* IMPORT / EXPORT */}
-                      <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                        <div className="text-white font-semibold mb-1">Import / Export</div>
-                        <div className="text-white/60 text-xs mb-3">
-                          Export or restore the entire Chores module (weekly chores, helper tasks, done history, game time sessions, settings).
-                        </div>
-
-                        <div className="flex flex-col gap-2">
-                          <button
-                            onClick={doExportXml}
-                            className="w-full px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
-                          >
-                            Export XML (download + copy)
-                          </button>
-
-                          <button
-                            onClick={() => fileInputRef.current?.click()}
-                            className="w-full px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
-                          >
-                            Import XML file
-                          </button>
-
-                          <input
-                            ref={fileInputRef}
-                            type="file"
-                            accept=".xml,application/xml,text/xml"
-                            className="hidden"
-                            onChange={(e) => onPickImportFile(e.target.files?.[0] || null)}
-                          />
-
-                          {ioError ? <div className="text-red-200 text-xs mt-2">{ioError}</div> : null}
-
-                          <div className="text-white/40 text-[11px] mt-2">
-                            Import replaces the current Chores state immediately.
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </ParentGate>
-                </div>
-              ) : null}
-
-              <div className={parentPanelOpen ? "" : "lg:col-span-2"}>
-                <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="text-white text-xl font-semibold">{selectedDayForView}</div>
-                    <div className="text-white/50 text-sm">Week of {weekKey}</div>
-                  </div>
-
-                  <div className="space-y-5">
-                    {todaysChores.length ? (
-                      people.map((person) => {
-                        const list = todaysChoresByPerson[person] || [];
-                        if (!list.length) return null;
-
-                        return (
-                          <div key={person} className="space-y-3">
-                            <div className="px-3 py-2 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
-                              <div className="text-white font-semibold">{person}</div>
-                            </div>
-
-                            <div className="space-y-3">
-                              {list.map((c) => {
-                                const done = !!doneMap[c.id];
-                                return (
-                                  <div
-                                    key={c.id}
-                                    className={`flex items-center justify-between p-3 rounded-2xl transition-all ${
-                                      done ? "bg-white/5 opacity-80" : "bg-white/5 hover:bg-white/10"
-                                    }`}
-                                  >
-                                    <div className="flex items-center gap-3 flex-1 min-w-0">
-                                      <button
-                                        onClick={() => {
-                                          if (!done) {
-                                            setPendingConfirm({ type: "chore", weekKey, chore: c });
-                                          } else {
-                                            setParentPanelOpen(true);
-                                          }
-                                        }}
-                                        className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all ${
-                                          done ? "bg-green-500 border-green-500" : "border-white/40 hover:border-white/70"
-                                        }`}
-                                        title={done ? "Done (parent required to uncheck via reset)" : "Mark as done"}
-                                      >
-                                        {done ? <Check className="w-4 h-4 text-white" /> : null}
-                                      </button>
-
-                                      <div className="min-w-0">
-                                        <div className={`text-white font-medium truncate ${done ? "line-through" : ""}`}>
-                                          {c.name}
-                                        </div>
-                                      </div>
-                                    </div>
-
-                                    {parentPanelOpen ? (
-                                      <button
-                                        onClick={() => {
-                                          if (window.confirm("Delete this chore?")) parentRemoveChore(c.id);
-                                        }}
-                                        className="p-1.5 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 transition-all"
-                                        title="Delete chore"
-                                      >
-                                        <Trash2 className="w-4 h-4 text-white/60 hover:text-red-200" />
-                                      </button>
-                                    ) : null}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <div className="text-white/40 text-center py-10">No chores for {selectedDayForView}.</div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-6 mt-6">
-                  <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                    <div className="text-white text-xl font-semibold mb-1">Daily Helper</div>
-                    <div className="text-white/60 text-sm mb-4">One-off bonus tasks. Completing gives bonus time/points.</div>
-
-                    {activeHelpers.length ? (
-                      <div className="space-y-3">
-                        {activeHelpers.map((t) => (
-                          <div key={t.id} className="rounded-2xl bg-white/5 border border-white/10 p-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="text-white font-semibold truncate">{t.title}</div>
-                                <div className="text-white/60 text-xs mt-1">
-                                  Assigned: {(t.assignedTo || []).join(", ")}
-                                  {formatInlineReward(t.reward)}
-                                </div>
-                                {t.expiresAt ? (
-                                  <div className="text-white/40 text-xs mt-1">
-                                    Expires: {new Date(t.expiresAt).toLocaleDateString()}
-                                  </div>
-                                ) : null}
-                              </div>
-
-                              <button
-                                onClick={() => setPendingConfirm({ type: "helper", task: t })}
-                                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
-                              >
-                                Complete
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-white/40 text-sm">No helper tasks right now.</div>
-                    )}
-
-                    {expiredHelpers.length ? (
-                      <div className="mt-4 text-white/40 text-xs">
-                        {expiredHelpers.length} expired task(s). Parent can reactivate in Parent tools.
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {/* GAME TIME SETTINGS MOVED HERE (RIGHT SIDE, BELOW DAILY HELPER) */}
-                  {parentPanelOpen ? (
-                    <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
-                      <div className="text-white text-xl font-semibold mb-1">Game Time settings</div>
-                      <div className="text-white/60 text-sm mb-4">
-                        Set minutes unlocked when they finish all chores for the day.
-                      </div>
-
-                      {parentUnlockedSession ? (
-                        <>
-                          <div className="grid grid-cols-2 gap-3">
-                            <div>
-                              <label className="text-white/70 text-sm mb-2 block">Harvey (minutes)</label>
+                        <div className="pt-2 border-t border-white/10 space-y-3">
+                          <div className="text-white/80 text-sm font-semibold">Game time settings</div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                              <div className="text-white/70 text-xs">Harvey minutes</div>
                               <input
                                 type="number"
                                 value={gameTimeHarvey}
-                                onChange={(e) => setGameTimeHarvey(e.target.value)}
-                                className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                                onChange={(e) => setGameTimeHarvey(Number(e.target.value || 0) || 0)}
+                                className="mt-2 w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white"
                               />
                             </div>
-                            <div>
-                              <label className="text-white/70 text-sm mb-2 block">Brady (minutes)</label>
+                            <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                              <div className="text-white/70 text-xs">Brady minutes</div>
                               <input
                                 type="number"
                                 value={gameTimeBrady}
-                                onChange={(e) => setGameTimeBrady(e.target.value)}
-                                className="w-full p-3 bg-white/10 border border-white/20 rounded-xl text-white"
+                                onChange={(e) => setGameTimeBrady(Number(e.target.value || 0) || 0)}
+                                className="mt-2 w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white"
                               />
                             </div>
                           </div>
-
                           <button
                             onClick={saveParentSettings}
-                            className="mt-3 w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all bg-white/15 hover:bg-white/25 border border-white/20"
+                            className="w-full px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white/90 text-sm"
                           >
                             Save settings
                           </button>
 
-                          <div className="text-white/40 text-xs mt-3">
-                            Start triggers <code className="text-white/70">POST /api/v1/network/kids/off</code>. End (and
-                            Pause) triggers <code className="text-white/70">POST /api/v1/network/kids/on</code>.
-                          </div>
-                        </>
-                      ) : (
-                        <div className="text-white/60 text-sm">
-                          Unlock Parent tools to edit settings.
+                          <button
+                            onClick={parentResetWeek}
+                            className="w-full px-3 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-white/70 hover:text-white/90 transition-all text-xs"
+                          >
+                            Reset week (uncheck all)
+                          </button>
                         </div>
-                      )}
-                    </div>
-                  ) : null}
+                      </div>
+                    ) : parentTab === "helper" ? (
+                      <div className="space-y-6">
+                        <div>
+                          <div className="text-white text-xl font-semibold mb-4">Add daily helper</div>
 
-                  <div className="text-center text-white/40 text-sm">
-                    Press <span className="text-white/60">ESC</span> to exit
-                  </div>
+                          <div className="space-y-3">
+                            <input
+                              value={helperTitle}
+                              onChange={(e) => setHelperTitle(e.target.value)}
+                              placeholder="e.g., Clean the table"
+                              className="w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white placeholder-white/40"
+                            />
 
-                  {parentPanelOpen ? (
-                    <div className="text-center">
-                      <button
-                        onClick={() => blockKidsInternet(ctx, { sourceRef: `manual:${ymd}` })}
-                        className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 text-sm"
-                      >
-                        Block kids internet now
-                      </button>
-                    </div>
-                  ) : null}
+                            <div className="rounded-2xl bg-white/5 border border-white/10 p-3 space-y-2">
+                              <div className="text-white/70 text-sm">Assign to</div>
+                              <label className="flex items-center gap-2 text-white/80 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={!!helperAssignHarvey}
+                                  onChange={(e) => setHelperAssignHarvey(e.target.checked)}
+                                />
+                                Harvey
+                              </label>
+                              <label className="flex items-center gap-2 text-white/80 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={!!helperAssignBrady}
+                                  onChange={(e) => setHelperAssignBrady(e.target.checked)}
+                                />
+                                Brady
+                              </label>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                                <div className="text-white/70 text-xs">Reward minutes</div>
+                                <input
+                                  type="number"
+                                  value={helperRewardMinutes}
+                                  onChange={(e) => setHelperRewardMinutes(Number(e.target.value || 0) || 0)}
+                                  className="mt-2 w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white"
+                                />
+                              </div>
+                              <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                                <div className="text-white/70 text-xs">Reward points</div>
+                                <input
+                                  type="number"
+                                  value={helperRewardPoints}
+                                  onChange={(e) => setHelperRewardPoints(Number(e.target.value || 0) || 0)}
+                                  className="mt-2 w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                              <div className="text-white/70 text-xs">Expiry (optional)</div>
+                              <input
+                                type="date"
+                                value={helperExpiryDate}
+                                onChange={(e) => setHelperExpiryDate(e.target.value)}
+                                className="mt-2 w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white"
+                              />
+                            </div>
+
+                            <button
+                              onClick={parentAddHelper}
+                              className="w-full p-3 rounded-xl text-white font-semibold hover:shadow-lg transition-all flex items-center justify-center gap-2 bg-white/15 hover:bg-white/25 border border-white/20"
+                            >
+                              <Plus className="w-5 h-5" />
+                              Add helper
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </ParentGate>
+                </div>
+
+                {/* RIGHT: Display panel */}
+                <div className="bg-white/5 border border-white/10 rounded-3xl p-5 min-h-[420px]">
+                  {parentTab === "chores" ? (
+                    <SettingsChoresPreview
+                      dayName={selectedDayForView}
+                      weekKey={weekKey}
+                      people={people}
+                      settingsChoresViewMode={settingsChoresViewMode}
+                      setSettingsChoresViewMode={setSettingsChoresViewMode}
+                      todaysByPerson={todaysChoresByPerson}
+                      weeklyByPerson={weeklyByPerson}
+                      onRequestDone={(wk, chore) => setPendingConfirm({ type: "chore", weekKey: wk, chore })}
+                      onRequestRemove={(choreId) => parentRemoveChore(choreId)}
+                    />
+                  ) : parentTab === "helper" ? (
+                    <SettingsHelperPanel
+                      active={activeHelpers}
+                      inactive={inactiveHelpers}
+                      onComplete={(task) => setPendingConfirm({ type: "helper", task })}
+                      onDelete={(id) => parentDeleteHelper(id)}
+                      onReactivate={(id) => parentReactivateHelper(id)}
+                    />
+                  ) : (
+                    <div className="text-white/50 text-sm">Open a tab.</div>
+                  )}
                 </div>
               </div>
-            </div>
+            ) : (
+              // Default: if settings not open, show a simple checklist view (day) similar to main module
+              <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
+                <div className="text-white/80 text-sm mb-3">Tip: open “Settings” to edit weekly chores, helper tasks, or the planner.</div>
+                <SettingsChoresPreview
+                  compact
+                  dayName={selectedDayForView}
+                  weekKey={weekKey}
+                  people={people}
+                  settingsChoresViewMode={"day"}
+                  setSettingsChoresViewMode={() => {}}
+                  todaysByPerson={todaysChoresByPerson}
+                  weeklyByPerson={weeklyByPerson}
+                  onRequestDone={(wk, chore) => setPendingConfirm({ type: "chore", weekKey: wk, chore })}
+                  onRequestRemove={null}
+                />
+              </div>
+            )}
 
             {pendingConfirm ? (
               <ConfirmCompleteModal
@@ -1779,6 +1460,732 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   );
 
   return createPortal(overlayContent, document.body);
+}
+
+function SettingsChoresPreview({
+  dayName,
+  weekKey,
+  people,
+  settingsChoresViewMode,
+  setSettingsChoresViewMode,
+  todaysByPerson,
+  weeklyByPerson,
+  onRequestDone,
+  onRequestRemove,
+  compact = false,
+}) {
+  const isWeek = settingsChoresViewMode === "week";
+  const title = compact ? "Today" : "Chores preview";
+
+  return (
+    <div className="h-full flex flex-col min-h-0">
+      <div className={`flex items-center justify-between gap-2 ${compact ? "mb-2" : "mb-3"}`}>
+        <div>
+          <div className="text-white font-semibold">{title}</div>
+          <div className="text-white/50 text-xs mt-1">
+            {isWeek ? `Week of ${weekKey}` : dayName}
+          </div>
+        </div>
+
+        {!compact ? (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setSettingsChoresViewMode("day")}
+              className={`px-2 py-1 rounded-lg text-xs border transition-all ${
+                !isWeek ? "bg-white/20 border-white/30" : "bg-white/5 border-white/10 hover:bg-white/10"
+              }`}
+            >
+              Day
+            </button>
+            <button
+              onClick={() => setSettingsChoresViewMode("week")}
+              className={`px-2 py-1 rounded-lg text-xs border transition-all ${
+                isWeek ? "bg-white/20 border-white/30" : "bg-white/5 border-white/10 hover:bg-white/10"
+              }`}
+            >
+              Week
+            </button>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-auto rounded-2xl bg-white/5 border border-white/10 p-3">
+        {(people || []).map((person) => {
+          const list = isWeek ? (weeklyByPerson?.[person] || []) : (todaysByPerson?.[person] || []);
+          if (!list.length) return null;
+
+          return (
+            <div key={person} className="py-2 border-b border-white/10 last:border-b-0">
+              <div className="text-sm font-semibold text-white/90 mb-1">{person}</div>
+              <div className="space-y-1">
+                {list.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between gap-2 text-sm text-white/85">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!c.done) onRequestDone?.(weekKey, c);
+                      }}
+                      className="flex items-center gap-2 text-left flex-1 min-w-0"
+                      title={c.done ? "Done" : "Mark done"}
+                    >
+                      <span className="inline-block w-4">{c.done ? "✅" : "⬜"}</span>
+                      <span className={`truncate ${c.done ? "line-through opacity-70" : ""}`}>
+                        {isWeek ? `${c.day}: ${c.name}` : c.name}
+                      </span>
+                    </button>
+
+                    {onRequestRemove ? (
+                      <button
+                        onClick={() => onRequestRemove(c.id)}
+                        className="px-2 py-1 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 text-white/70 text-xs"
+                        title="Delete chore"
+                      >
+                        Delete
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+
+        {!people?.length ? <div className="text-white/40 text-sm">No people configured.</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function SettingsHelperPanel({ active, inactive, onComplete, onDelete, onReactivate }) {
+  return (
+    <div className="h-full flex flex-col min-h-0">
+      <div className="mb-3">
+        <div className="text-white font-semibold">Daily helpers</div>
+        <div className="text-white/50 text-xs mt-1">Active helpers on top. Expired/completed at the bottom.</div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-auto space-y-4">
+        <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+          <div className="text-white/80 text-sm font-semibold mb-2">Active</div>
+          {active?.length ? (
+            <div className="space-y-2">
+              {active.map((t) => (
+                <div key={t.id} className="rounded-xl bg-white/5 border border-white/10 p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-white/90 text-sm font-semibold truncate">{t.title}</div>
+                      <div className="text-white/60 text-xs mt-1">
+                        {(t.assignedTo || []).join(", ")}
+                        {formatInlineReward(t.reward)}
+                      </div>
+                      {t.expiresAt ? (
+                        <div className="text-white/45 text-xs mt-1">Expires: {new Date(t.expiresAt).toLocaleDateString()}</div>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => onComplete?.(t)}
+                        className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-xs text-white/90"
+                      >
+                        Complete
+                      </button>
+                      <button
+                        onClick={() => onDelete?.(t.id)}
+                        className="px-2 py-1 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 text-white/70 text-xs"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-white/40 text-sm">No active helpers.</div>
+          )}
+        </div>
+
+        <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+          <div className="text-white/80 text-sm font-semibold mb-2">Expired / completed</div>
+          {inactive?.length ? (
+            <div className="space-y-2">
+              {inactive
+                .slice()
+                .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+                .map((t) => (
+                  <div key={t.id} className="rounded-xl bg-white/5 border border-white/10 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-white/85 text-sm font-semibold truncate">
+                          {t.title}{" "}
+                          <span className="text-white/45 text-xs font-normal">({t.status})</span>
+                        </div>
+                        <div className="text-white/60 text-xs mt-1">
+                          {(t.assignedTo || []).join(", ")}
+                          {formatInlineReward(t.reward)}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => onReactivate?.(t.id)}
+                          className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-xs text-white/90"
+                          title="Reactivate (clears completion and allows rewards again)"
+                        >
+                          Reactivate
+                        </button>
+                        <button
+                          onClick={() => onDelete?.(t.id)}
+                          className="px-2 py-1 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 text-white/70 text-xs"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          ) : (
+            <div className="text-white/40 text-sm">No expired/completed helpers.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -----------------------------
+// Planner workspace (routine-based, full-width)
+// -----------------------------
+function PlannerWorkspace({ ctx, normalized, patch, people, weekKey }) {
+  const [bankSearch, setBankSearch] = useState("");
+  const [newBankTitle, setNewBankTitle] = useState("");
+  const [newBankTags, setNewBankTags] = useState("");
+
+  const [activeCell, setActiveCell] = useState(null); // {day, person} for modal
+  const [pickerQuery, setPickerQuery] = useState("");
+
+  const bank = Array.isArray(normalized.choreBank) ? normalized.choreBank : [];
+  const plan = normalized.planner?.plan && typeof normalized.planner.plan === "object" ? normalized.planner.plan : {};
+
+  const bankMap = useMemo(() => {
+    const m = new Map();
+    for (const b of bank) m.set(b.id, b);
+    return m;
+  }, [bank]);
+
+  const filteredBank = useMemo(() => {
+    const q = bankSearch.trim().toLowerCase();
+    if (!q) return bank;
+    return bank.filter((b) => {
+      const title = String(b.title || "").toLowerCase();
+      const tags = Array.isArray(b.tags) ? b.tags.join(" ").toLowerCase() : "";
+      return title.includes(q) || tags.includes(q);
+    });
+  }, [bank, bankSearch]);
+
+  const coverage = useMemo(() => {
+    let items = 0;
+    let filledCells = 0;
+    const totalCells = (people?.length || 0) * DAYS.length;
+
+    for (const day of DAYS) {
+      const perDay = plan?.[day] || {};
+      for (const person of people || []) {
+        const arr = Array.isArray(perDay?.[person]) ? perDay[person] : [];
+        if (arr.length) filledCells += 1;
+        items += arr.length;
+      }
+    }
+    const pct = totalCells ? Math.round((filledCells / totalCells) * 100) : 0;
+    return { items, filledCells, totalCells, pct };
+  }, [plan, people]);
+
+  const setPlanCell = useCallback(
+    (day, person, nextIds) => {
+      const nextPlan = { ...(plan || {}) };
+      const perDay = { ...(nextPlan[day] || {}) };
+      if (nextIds && nextIds.length) perDay[person] = nextIds.slice();
+      else delete perDay[person];
+      if (Object.keys(perDay).length) nextPlan[day] = perDay;
+      else delete nextPlan[day];
+
+      patch({
+        ...normalized,
+        planner: {
+          ...(normalized.planner || {}),
+          plan: nextPlan,
+        },
+      });
+    },
+    [plan, patch, normalized]
+  );
+
+  const addToCell = useCallback(
+    (day, person, bankId) => {
+      const cur = Array.isArray(plan?.[day]?.[person]) ? plan[day][person] : [];
+      if (cur.includes(bankId)) return;
+      setPlanCell(day, person, [...cur, bankId]);
+    },
+    [plan, setPlanCell]
+  );
+
+  const removeFromCell = useCallback(
+    (day, person, bankId) => {
+      const cur = Array.isArray(plan?.[day]?.[person]) ? plan[day][person] : [];
+      const next = cur.filter((x) => x !== bankId);
+      setPlanCell(day, person, next);
+    },
+    [plan, setPlanCell]
+  );
+
+  const onDragStartBank = (e, bankId) => {
+    try {
+      e.dataTransfer.setData("text/plain", bankId);
+      e.dataTransfer.effectAllowed = "copy";
+    } catch {}
+  };
+
+  const onDropCell = (e, day, person) => {
+    e.preventDefault();
+    const bankId = e.dataTransfer.getData("text/plain");
+    if (!bankId) return;
+    if (!bankMap.has(bankId)) return;
+    addToCell(day, person, bankId);
+  };
+
+  const addBankChore = () => {
+    const title = newBankTitle.trim();
+    if (!title) return;
+    const tags = newBankTags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    const item = {
+      id: `b_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      title,
+      tags,
+      createdAt: Date.now(),
+    };
+
+    patch({
+      ...normalized,
+      choreBank: [...bank, item],
+    });
+
+    setNewBankTitle("");
+    setNewBankTags("");
+  };
+
+  const deleteBankChore = (bankId) => {
+    const nextBank = bank.filter((b) => b.id !== bankId);
+
+    // remove from plan anywhere it appears
+    const nextPlan = {};
+    for (const day of DAYS) {
+      const perDay = plan?.[day] || {};
+      const outDay = {};
+      for (const person of Object.keys(perDay)) {
+        const arr = Array.isArray(perDay[person]) ? perDay[person] : [];
+        const nextArr = arr.filter((x) => x !== bankId);
+        if (nextArr.length) outDay[person] = nextArr;
+      }
+      if (Object.keys(outDay).length) nextPlan[day] = outDay;
+    }
+
+    patch({
+      ...normalized,
+      choreBank: nextBank,
+      planner: { ...(normalized.planner || {}), plan: nextPlan },
+    });
+  };
+
+  const clearPlan = () => {
+    if (!window.confirm("Clear the whole routine plan?")) return;
+    patch({
+      ...normalized,
+      planner: { ...(normalized.planner || {}), plan: {}, lastPublishedAt: null },
+    });
+  };
+
+  const publishPlan = () => {
+    const now = Date.now();
+    const nextChores = [];
+
+    for (const day of DAYS) {
+      const perDay = plan?.[day] || {};
+      for (const person of people || []) {
+        const ids = Array.isArray(perDay?.[person]) ? perDay[person] : [];
+        for (const bankId of ids) {
+          const b = bankMap.get(bankId);
+          if (!b) continue;
+          nextChores.push({
+            id: `plan:${day}:${person}:${bankId}`,
+            day,
+            person,
+            name: b.title,
+            createdAt: now,
+          });
+        }
+      }
+    }
+
+    patch({
+      ...normalized,
+      chores: nextChores,
+      planner: { ...(normalized.planner || {}), lastPublishedAt: now },
+    });
+  };
+
+  const exportBankXml = async () => {
+    try {
+      const payload = {
+        moduleId: "chores-bank",
+        exportedAt: Date.now(),
+        schemaVersion: normalized.version,
+        data: bank,
+      };
+      const json = JSON.stringify(payload);
+      const safe = json.replaceAll("]]>", "]]]]><![CDATA[>");
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<FamilyDashboard module="chores-bank" schemaVersion="${normalized.version}">
+  <exportedAt>${new Date(payload.exportedAt).toISOString()}</exportedAt>
+  <json><![CDATA[${safe}]]></json>
+</FamilyDashboard>
+`;
+
+      try {
+        await navigator.clipboard?.writeText?.(xml);
+      } catch {}
+
+      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `chores-bank-${new Date().toISOString().slice(0, 10)}.xml`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn("[CHORES] bank export failed", e);
+      alert(e?.message || "Export failed");
+    }
+  };
+
+  const importBankXml = async () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".xml,application/xml,text/xml";
+    input.onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const xmlText = await file.text();
+      try {
+        const parsed = parseBankXml(xmlText);
+        const nextBank = Array.isArray(parsed) ? parsed : [];
+        patch({ ...normalized, choreBank: nextBank });
+      } catch (err) {
+        alert(err?.message || "Import failed");
+      }
+    };
+    input.click();
+  };
+
+  const pickerItems = useMemo(() => {
+    const q = pickerQuery.trim().toLowerCase();
+    if (!q) return bank;
+    return bank.filter((b) => {
+      const title = String(b.title || "").toLowerCase();
+      const tags = Array.isArray(b.tags) ? b.tags.join(" ").toLowerCase() : "";
+      return title.includes(q) || tags.includes(q);
+    });
+  }, [bank, pickerQuery]);
+
+  return (
+    <div className="bg-white/10 backdrop-blur-xl rounded-3xl p-6 border border-white/20 shadow-2xl">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-white text-2xl font-bold">Chore planner</div>
+          <div className="text-white/60 text-sm mt-1">Edit the routine, then publish to this week’s chores list.</div>
+          <div className="text-white/40 text-xs mt-2">
+            Coverage: <span className="text-white/70">{coverage.filledCells}/{coverage.totalCells}</span> cells filled{" "}
+            <span className="text-white/50">({coverage.pct}%)</span> •{" "}
+            <span className="text-white/70">{coverage.items}</span> total assignments
+          </div>
+        </div>
+
+        <div className="flex gap-2 flex-wrap justify-end">
+          <button
+            onClick={exportBankXml}
+            className="px-3 py-3 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
+          >
+            Export XML
+          </button>
+          <button
+            onClick={importBankXml}
+            className="px-3 py-3 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
+          >
+            Import XML
+          </button>
+          <button
+            onClick={publishPlan}
+            className="px-4 py-3 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-sm"
+            title="Generate this week's chores list from the routine"
+          >
+            Publish to chores
+          </button>
+          <button
+            onClick={clearPlan}
+            className="px-4 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 text-sm"
+          >
+            Clear routine
+          </button>
+        </div>
+      </div>
+
+      {/* bank + grid: fixed height so bank can scroll without pushing grid off-screen */}
+      <div className="mt-5 flex flex-col lg:flex-row gap-4 h-[calc(100vh-260px)] overflow-hidden min-h-0 items-stretch">
+        {/* BANK */}
+        <div className="lg:w-[22%] lg:min-w-[260px] lg:max-w-[380px] rounded-2xl bg-white/5 border border-white/10 h-full min-h-0 overflow-hidden">
+          <div className="p-4 h-full min-h-0 flex flex-col gap-3">
+            <input
+              value={bankSearch}
+              onChange={(e) => setBankSearch(e.target.value)}
+              placeholder="Search chores or tags…"
+              className="w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white placeholder-white/40"
+            />
+
+            <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+              <div className="text-white/80 text-sm font-semibold mb-2">Add to bank</div>
+              <input
+                value={newBankTitle}
+                onChange={(e) => setNewBankTitle(e.target.value)}
+                placeholder="e.g., Vacuum living room"
+                className="w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white placeholder-white/40"
+              />
+              <input
+                value={newBankTags}
+                onChange={(e) => setNewBankTags(e.target.value)}
+                placeholder="tags (comma-separated)"
+                className="mt-2 w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white placeholder-white/40"
+              />
+              <button
+                onClick={addBankChore}
+                className="mt-2 w-full px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-sm"
+              >
+                Add
+              </button>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-auto space-y-2 pr-1">
+              {filteredBank.length ? (
+                filteredBank
+                  .slice()
+                  .sort((a, b) => (a.title || "").localeCompare(b.title || ""))
+                  .map((b) => (
+                    <div
+                      key={b.id}
+                      draggable
+                      onDragStart={(e) => onDragStartBank(e, b.id)}
+                      className="rounded-xl bg-white/5 border border-white/10 p-3 hover:bg-white/10 transition-all cursor-grab active:cursor-grabbing"
+                      title="Drag into a grid cell"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-white/90 text-sm font-semibold truncate">{b.title}</div>
+                          {b.tags?.length ? <div className="text-white/50 text-xs mt-1 truncate">{b.tags.join(", ")}</div> : null}
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (window.confirm("Delete this bank chore?")) deleteBankChore(b.id);
+                          }}
+                          className="px-2 py-1 rounded-lg bg-white/5 hover:bg-red-500/20 border border-white/10 hover:border-red-500/30 text-white/70 text-xs"
+                          title="Delete"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))
+              ) : (
+                <div className="text-white/40 text-sm mt-2">No bank chores yet.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* GRID */}
+        <div className="flex-1 rounded-2xl bg-white/5 border border-white/10 p-4 h-full min-h-0 overflow-auto">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-white font-semibold">Weekly plan grid</div>
+              <div className="text-white/50 text-xs mt-1">
+                Routine for this week. Week key: <span className="text-white/70">{weekKey}</span>
+              </div>
+            </div>
+            <div className="text-white/40 text-xs">
+              Last published:{" "}
+              {normalized.planner?.lastPublishedAt ? new Date(normalized.planner.lastPublishedAt).toLocaleString() : "Not yet"}
+            </div>
+          </div>
+
+          <div className="mt-4 min-w-[720px]">
+            <div className="grid" style={{ gridTemplateColumns: `180px repeat(${DAYS.length}, minmax(160px, 1fr))` }}>
+              <div className="text-white/50 text-xs p-2 border-b border-white/10"></div>
+              {DAYS.map((d) => (
+                <div key={d} className="text-white/70 text-xs font-semibold p-2 border-b border-white/10">
+                  {d.slice(0, 3)}
+                </div>
+              ))}
+
+              {(people || []).map((person) => (
+                <React.Fragment key={person}>
+                  <div className="p-2 border-b border-white/10 text-white/80 text-sm font-semibold">{person}</div>
+                  {DAYS.map((day) => {
+                    const ids = Array.isArray(plan?.[day]?.[person]) ? plan[day][person] : [];
+                    return (
+                      <div
+                        key={`${person}-${day}`}
+                        onClick={() => {
+                          setActiveCell({ day, person });
+                          setPickerQuery("");
+                        }}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => onDropCell(e, day, person)}
+                        className="p-2 border-b border-white/10 border-l border-white/10 min-h-[90px] rounded-none hover:bg-white/5 transition-all"
+                        title="Click to pick from bank or drop here"
+                      >
+                        {ids.length ? (
+                          <div className="flex flex-wrap gap-1">
+                            {ids.map((bankId) => {
+                              const b = bankMap.get(bankId);
+                              const label = b?.title || bankId;
+                              return (
+                                <button
+                                  key={bankId}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeFromCell(day, person, bankId);
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/10 text-white/85 text-xs"
+                                  title="Click to remove"
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-white/30 text-xs mt-7 text-center">Drop or click</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {activeCell ? (
+        <PlanPickerModal
+          title={`Add chore • ${activeCell.person} • ${activeCell.day}`}
+          query={pickerQuery}
+          setQuery={setPickerQuery}
+          items={pickerItems}
+          onCancel={() => setActiveCell(null)}
+          onPick={(bankId) => {
+            addToCell(activeCell.day, activeCell.person, bankId);
+            setActiveCell(null);
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function PlanPickerModal({ title, query, setQuery, items, onCancel, onPick }) {
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="max-w-lg w-full rounded-3xl bg-white/10 border border-white/20 p-5">
+        <div className="text-white text-lg font-semibold">{title}</div>
+
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search…"
+          className="mt-3 w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white placeholder-white/40"
+        />
+
+        <div className="mt-3 max-h-[50vh] overflow-auto space-y-2">
+          {items.length ? (
+            items
+              .slice()
+              .sort((a, b) => (a.title || "").localeCompare(b.title || ""))
+              .map((b) => (
+                <button
+                  key={b.id}
+                  onClick={() => onPick(b.id)}
+                  className="w-full text-left rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 p-3"
+                >
+                  <div className="text-white/90 text-sm font-semibold">{b.title}</div>
+                  {b.tags?.length ? <div className="text-white/50 text-xs mt-1">{b.tags.join(", ")}</div> : null}
+                </button>
+              ))
+          ) : (
+            <div className="text-white/40 text-sm py-6 text-center">No matches.</div>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 text-sm"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function parseBankXml(xmlText) {
+  if (typeof xmlText !== "string" || !xmlText.trim()) throw new Error("Empty XML.");
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(xmlText, "application/xml");
+  const parseErr = doc.getElementsByTagName("parsererror")?.[0];
+  if (parseErr) throw new Error("Invalid XML.");
+
+  const root = doc.documentElement;
+  const mod = root?.getAttribute?.("module") || "";
+  if (mod && mod !== "chores-bank") throw new Error(`Wrong module in XML (found "${mod}").`);
+
+  const jsonNode = doc.getElementsByTagName("json")?.[0];
+  if (!jsonNode) throw new Error("Unsupported XML format (missing <json>).");
+  const rawJson = (jsonNode.textContent || "").trim();
+  if (!rawJson) throw new Error("XML contains an empty <json> payload.");
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    throw new Error("Could not parse JSON payload inside XML.");
+  }
+
+  const data = parsed?.data ?? parsed;
+  if (!Array.isArray(data)) throw new Error("Bank payload must be an array.");
+  return data
+    .map((b) => ({
+      id: String(b.id || ""),
+      title: String(b.title || ""),
+      tags: Array.isArray(b.tags) ? b.tags.map(String).map((t) => t.trim()).filter(Boolean) : [],
+      createdAt: Number(b.createdAt || 0) || 0,
+    }))
+    .filter((b) => b.id && b.title);
 }
 
 function ConfirmCompleteModal({ title, subtitle, details, onCancel, onConfirm }) {
