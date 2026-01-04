@@ -18,6 +18,7 @@ import {
 } from "./helpers.js";
 
 import { unlockParent } from "../rewards/helpers.js";
+import { exportChoresToXml } from "./xml.js";
 
 // -----------------------------
 // lightweight global toggle
@@ -1126,6 +1127,14 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                   Settings
                 </button>
 
+                <button
+                  onClick={exportChoresXml}
+                  className="px-4 py-3 bg-white/10 rounded-xl text-white/90 hover:bg-white/20 transition-all text-sm border border-white/10"
+                  title="Export current chores list as XML"
+                >
+                  Export chores XML
+                </button>
+
                 {parentUnlockedSession ? (
                   <button
                     onClick={lockSession}
@@ -1890,6 +1899,29 @@ function PlannerWorkspace({ ctx, normalized, patch, people, weekKey }) {
       }
     };
     input.click();
+  };
+
+  const exportChoresXml = async () => {
+    try {
+      const xml = exportChoresToXml(normalized);
+
+      try {
+        await navigator.clipboard?.writeText?.(xml);
+      } catch {}
+
+      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `chores-${new Date().toISOString().slice(0, 10)}.xml`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn("[CHORES] chores export failed", e);
+      alert(e?.message || "Export failed");
+    }
   };
 
   const pickerItems = useMemo(() => {
