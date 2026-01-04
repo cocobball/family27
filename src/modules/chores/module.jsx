@@ -1066,6 +1066,29 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     setParentUnlockedSession(false);
   };
 
+  const exportChoresXml = async () => {
+    try {
+      const xml = exportChoresToXml(normalized);
+
+      try {
+        await navigator.clipboard?.writeText?.(xml);
+      } catch {}
+
+      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `chores-${new Date().toISOString().slice(0, 10)}.xml`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn("[CHORES] chores export failed", e);
+      alert(e?.message || "Export failed");
+    }
+  };
+
   const overlayContent = (
     <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm">
       <div className="h-screen overflow-auto">
@@ -1899,29 +1922,6 @@ function PlannerWorkspace({ ctx, normalized, patch, people, weekKey }) {
       }
     };
     input.click();
-  };
-
-  const exportChoresXml = async () => {
-    try {
-      const xml = exportChoresToXml(normalized);
-
-      try {
-        await navigator.clipboard?.writeText?.(xml);
-      } catch {}
-
-      const blob = new Blob([xml], { type: "application/xml;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `chores-${new Date().toISOString().slice(0, 10)}.xml`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      console.warn("[CHORES] chores export failed", e);
-      alert(e?.message || "Export failed");
-    }
   };
 
   const pickerItems = useMemo(() => {
