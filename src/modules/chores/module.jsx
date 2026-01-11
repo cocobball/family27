@@ -18,7 +18,7 @@ import {
 } from "./helpers.js";
 
 import { unlockParent } from "../rewards/helpers.js";
-import { exportChoresToXml } from "./xml.js";
+import { exportChoresToXml, importChoresFromXml } from "./xml.js";
 
 // -----------------------------
 // lightweight global toggle
@@ -609,6 +609,19 @@ export default function ChoresModule({ ctx }) {
         {/* SETTINGS button moved to top-right */}
         <div className="ml-auto flex items-center gap-2">
           <button
+            onClick={() => {
+              const todayYMD = ymdFromDate(new Date());
+              sharedSet(ctx, "selectedDate", todayYMD);
+              setSelectedYMD(todayYMD);
+              bus?.emit?.("calendar:dateSelected", { date: todayYMD });
+            }}
+            className="px-2.5 py-1.5 rounded-lg text-xs border transition-all bg-white/10 border-white/15 hover:bg-white/15 flex items-center gap-1.5"
+            title="Jump to today"
+          >
+            Today
+          </button>
+
+          <button
             onClick={() => setChoreModeEnabled(true)}
             className="px-2.5 py-1.5 rounded-lg text-xs border transition-all bg-white/10 border-white/15 hover:bg-white/15 flex items-center gap-1.5"
             aria-pressed={enabled}
@@ -1089,6 +1102,31 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
     }
   };
 
+  const importChoresXml = async () => {
+    try {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".xml,application/xml,text/xml";
+      input.onchange = async (e) => {
+        try {
+          const file = e.target?.files?.[0];
+          if (!file) return;
+
+          const xmlText = await file.text();
+          const importedData = importChoresFromXml(xmlText);
+          patch(importedData);
+        } catch (err) {
+          console.warn("[CHORES] import failed", err);
+          alert(err?.message || "Import failed");
+        }
+      };
+      input.click();
+    } catch (e) {
+      console.warn("[CHORES] import error", e);
+      alert(e?.message || "Import failed");
+    }
+  };
+
   const overlayContent = (
     <div className="fixed inset-0 z-[9999] bg-black/70 backdrop-blur-sm">
       <div className="h-screen overflow-auto">
@@ -1156,6 +1194,14 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                   title="Export current chores list as XML"
                 >
                   Export chores XML
+                </button>
+
+                <button
+                  onClick={importChoresXml}
+                  className="px-4 py-3 bg-white/10 rounded-xl text-white/90 hover:bg-white/20 transition-all text-sm border border-white/10"
+                  title="Import chores list from XML"
+                >
+                  Import chores XML
                 </button>
 
                 {parentUnlockedSession ? (
