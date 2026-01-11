@@ -1915,6 +1915,69 @@ function PlannerWorkspace({ ctx, normalized, patch, people, weekKey }) {
     });
   };
 
+  const importFromCurrentChores = () => {
+    if (!window.confirm("Import current scheduled chores into the planner routine? This won't change the chore schedule until you Publish.")) {
+      return;
+    }
+
+    const currentChores = Array.isArray(normalized.chores) ? normalized.chores : [];
+    if (!currentChores.length) {
+      alert("No scheduled chores to import.");
+      return;
+    }
+
+    const nextBank = [...bank];
+    const nextPlan = {};
+
+    // Create a map for fast lookup by title (case-insensitive)
+    const bankByTitle = new Map();
+    for (const b of bank) {
+      const key = String(b.title || "").trim().toLowerCase();
+      if (key) bankByTitle.set(key, b);
+    }
+
+    for (const chore of currentChores) {
+      const { day, person, name } = chore;
+      if (!name || !day || !person) continue;
+      if (!DAYS.includes(day)) continue;
+      if (!people.includes(person)) continue;
+
+      const titleKey = name.trim().toLowerCase();
+      let bankItem = bankByTitle.get(titleKey);
+
+      // If not found in bank, create a new bank item
+      if (!bankItem) {
+        const newId = `b_import_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+        bankItem = {
+          id: newId,
+          title: name.trim(),
+          tags: [],
+          createdAt: Date.now(),
+        };
+        nextBank.push(bankItem);
+        bankByTitle.set(titleKey, bankItem);
+      }
+
+      // Add to plan
+      if (!nextPlan[day]) nextPlan[day] = {};
+      if (!nextPlan[day][person]) nextPlan[day][person] = [];
+
+      // Avoid duplicates within the same cell
+      if (!nextPlan[day][person].includes(bankItem.id)) {
+        nextPlan[day][person].push(bankItem.id);
+      }
+    }
+
+    patch({
+      ...normalized,
+      choreBank: nextBank,
+      planner: {
+        ...(normalized.planner || {}),
+        plan: nextPlan,
+      },
+    });
+  };
+
   const exportBankXml = async () => {
     try {
       const payload = {
@@ -1994,6 +2057,13 @@ function PlannerWorkspace({ ctx, normalized, patch, people, weekKey }) {
         </div>
 
         <div className="flex gap-2 flex-wrap justify-end">
+          <button
+            onClick={importFromCurrentChores}
+            className="px-3 py-3 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
+            title="Import current scheduled chores into the planner routine"
+          >
+            Import from current chores
+          </button>
           <button
             onClick={exportBankXml}
             className="px-3 py-3 rounded-xl bg-white/10 hover:bg-white/20 border border-white/10 text-white text-sm"
