@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { defaultPhotosData, migratePhotosData, getActivePhotoList, shuffleInPlace } from "./helpers.js";
 
 // --- ctx compatibility ---
@@ -222,7 +223,7 @@ export default function PhotosModule({ ctx }) {
       </div>
 
       {/* Fullscreen overlay */}
-      {active && (
+      {active && createPortal(
         <div className="fixed inset-0 z-[9999] bg-black" onClick={() => setActive(false)} style={{ touchAction: "manipulation" }}>
           {/* blurred background */}
           {showBlurBg ? (
@@ -287,7 +288,8 @@ export default function PhotosModule({ ctx }) {
               ) : null}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
