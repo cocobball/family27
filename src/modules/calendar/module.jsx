@@ -644,13 +644,13 @@ export default function CalendarModule({ ctx }) {
 
   useEffect(() => {
     const unsub = ctx.sharedState.subscribe((s) => {
-      const nextSel = s.selectedDate || todayStr();
-      setSel(nextSel);
+      if (s.selectedDate) {
+        setSel(s.selectedDate);
+        const m = monthStrFromDate(s.selectedDate);
+        if (m) setMonth((cur) => (cur === m ? cur : m));
+      }
       setChoresForSelectedDate(s.choresForSelectedDate || []);
       setMealsForSelectedDate(s.mealsForSelectedDate || []);
-
-      const m = monthStrFromDate(nextSel);
-      if (m) setMonth((cur) => (cur === m ? cur : m));
     });
     return unsub;
   }, [ctx]);
