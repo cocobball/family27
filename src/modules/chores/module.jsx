@@ -405,6 +405,10 @@ export default function ChoresModule({ ctx }) {
   const [selectedYMD, setSelectedYMD] = useState(() => sharedGetSelectedYMD(ctx));
   const [viewMode, setViewMode] = useState("day");
   const [pendingConfirm, setPendingConfirm] = useState(null);
+  
+  // Link time confirmation modal
+  const [showLinkConfirm, setShowLinkConfirm] = useState(false);
+  const [linkConfirmPerson, setLinkConfirmPerson] = useState(null);
 
   const baseDate = useMemo(() => {
     return selectedYMD ? dateFromYMD(selectedYMD) : new Date();
@@ -430,9 +434,9 @@ export default function ChoresModule({ ctx }) {
   }, [bus]);
 
   // Main-screen Game Time button state tick
-  const [, forceTick] = useState(0);
+  const [tick, setTick] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => forceTick((x) => x + 1), 1000);
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
     return () => clearInterval(t);
   }, []);
 
@@ -441,31 +445,96 @@ export default function ChoresModule({ ctx }) {
     const now = Date.now();
     let next = data;
     let changed = false;
+    
+    const linkTime = !!data.settings?.linkGameTime;
 
     const perDay = data.gameTimeByDay?.[ymd] || {};
-    for (const kidId of Object.keys(perDay)) {
-      const s = perDay[kidId];
-      if (!s) continue;
-      if (s.status !== "active") continue;
-      if (!s.endsAt) continue;
-      if (now < s.endsAt) continue;
+    
+    if (linkTime) {
+      // Handle linked sessions together
+      const harveySession = perDay["harvey"];
+      const bradySession = perDay["brady"];
+      
+      const harveyActive = harveySession?.status === "active" && harveySession?.endsAt;
+      const bradyActive = bradySession?.status === "active" && bradySession?.endsAt;
+      
+      // If either is active and time expired, end both
+      if ((harveyActive && now >= harveySession.endsAt) || (bradyActive && now >= bradySession.endsAt)) {
+        changed = true;
+        next = setGameTimeSession(next, ymd, "harvey", { status: "ended" });
+        next = setGameTimeSession(next, ymd, "brady", { status: "ended" });
+        
+        // Block once
+        const harveyEnded = getGameTimeSession(next, ymd, "harvey");
+        const bradyEnded = getGameTimeSession(next, ymd, "brady");
+        if (!harveyEnded?.blockedAt || !bradyEnded?.blockedAt) {
+          next = setGameTimeSession(next, ymd, "harvey", { blockedAt: Date.now() });
+          next = setGameTimeSession(next, ymd, "brady", { blockedAt: Date.now() });
+          blockKidsInternet(ctx, { sourceRef: `gametime:linked:end:${ymd}` });
+        }
+      }
+    } else {
+      // Normal mode (not linked)
+      for (const kidId of Object.keys(perDay)) {
+        const s = perDay[kidId];
+        if (!s) continue;
+        if (s.status !== "active") continue;
+        if (!s.endsAt) continue;
+        if (now < s.endsAt) continue;
 
-      changed = true;
-      next = setGameTimeSession(next, ymd, kidId, { status: "ended" });
+        changed = true;
+        next = setGameTimeSession(next, ymd, kidId, { status: "ended" });
 
-      // block once
-      const ended = getGameTimeSession(next, ymd, kidId);
-      if (!ended?.blockedAt) {
-        next = setGameTimeSession(next, ymd, kidId, { blockedAt: Date.now() });
-        blockKidsInternet(ctx, { sourceRef: `gametime:end:${ymd}:${kidId}` });
+        // block once
+        const ended = getGameTimeSession(next, ymd, kidId);
+        if (!ended?.blockedAt) {
+          next = setGameTimeSession(next, ymd, kidId, { blockedAt: Date.now() });
+          blockKidsInternet(ctx, { sourceRef: `gametime:end:${ymd}:${kidId}` });
+        }
       }
     }
 
     if (changed) patch(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, ymd]);
+  }, [data, ymd, tick]);
 
   const startGameTimeForKid = async (person) => {
+    const linkTime = !!data.settings?.linkGameTime;
+    
+    if (linkTime) {
+      // Link time mode: Harvey and Brady are linked
+      const harveyDaily = getDailyCompletionState(data, baseDate || new Date(), "Harvey");
+      const bradyDaily = getDailyCompletionState(data, baseDate || new Date(), "Brady");
+      
+      const harveyMinutes = Number(data.settings?.gameTimeMinutesOnDailyComplete?.Harvey || 0) || 0;
+      const bradyMinutes = Number(data.settings?.gameTimeMinutesOnDailyComplete?.Brady || 0) || 0;
+      
+      const harveySession = getGameTimeSession(data, ymd, "harvey");
+      const bradySession = getGameTimeSession(data, ymd, "brady");
+      
+      const harveyEligible = 
+        harveyDaily.allDone && 
+        harveyMinutes > 0 && 
+        (!harveySession || harveySession.status === "ready" || harveySession.status === null);
+      
+      const bradyEligible = 
+        bradyDaily.allDone && 
+        bradyMinutes > 0 && 
+        (!bradySession || bradySession.status === "ready" || bradySession.status === null);
+      
+      // If both are not eligible, show brother message
+      if (!harveyEligible || !bradyEligible) {
+        alert("Tell your brother to finish his chores.");
+        return;
+      }
+      
+      // Both are eligible - show confirmation modal
+      setLinkConfirmPerson(person);
+      setShowLinkConfirm(true);
+      return;
+    }
+    
+    // Normal mode (not linked)
     const daily = getDailyCompletionState(data, baseDate || new Date(), person);
     const kidId = daily.kidId;
     if (!kidId || !daily.allDone) return;
@@ -496,9 +565,95 @@ export default function ChoresModule({ ctx }) {
       sourceRef: `gametime:start:${ymd}:${kidId}:${totalMinutes}`,
     });
   };
+  
+  const startLinkedGameTime = async () => {
+    const harveyMinutes = Number(data.settings?.gameTimeMinutesOnDailyComplete?.Harvey || 0) || 0;
+    const bradyMinutes = Number(data.settings?.gameTimeMinutesOnDailyComplete?.Brady || 0) || 0;
+    
+    // Use minimum minutes for linked session
+    const linkedMinutes = Math.min(harveyMinutes, bradyMinutes);
+    
+    const now = Date.now();
+    const endsAt = now + linkedMinutes * 60 * 1000;
+    
+    // Create linked sessions for both kids
+    let next = setGameTimeSession(data, ymd, "harvey", {
+      totalMinutes: linkedMinutes,
+      startedAt: now,
+      endsAt,
+      status: "active",
+      blockedAt: null,
+      remainingMs: null,
+      pausedAt: null,
+    });
+    
+    next = setGameTimeSession(next, ymd, "brady", {
+      totalMinutes: linkedMinutes,
+      startedAt: now,
+      endsAt,
+      status: "active",
+      blockedAt: null,
+      remainingMs: null,
+      pausedAt: null,
+    });
+    
+    patch(next);
+    
+    // Allow internet for both kids
+    await allowKidsInternet(ctx, {
+      minutes: linkedMinutes,
+      kidId: "harvey",
+      sourceRef: `gametime:linked:start:${ymd}:harvey:${linkedMinutes}`,
+    });
+    
+    await allowKidsInternet(ctx, {
+      minutes: linkedMinutes,
+      kidId: "brady",
+      sourceRef: `gametime:linked:start:${ymd}:brady:${linkedMinutes}`,
+    });
+    
+    setShowLinkConfirm(false);
+    setLinkConfirmPerson(null);
+  };
 
   const pauseGameTimeForKid = async (kidId) => {
     if (!kidId) return;
+    
+    const linkTime = !!data.settings?.linkGameTime;
+    
+    if (linkTime && (kidId === "harvey" || kidId === "brady")) {
+      // Pause both kids
+      const harveySession = getGameTimeSession(data, ymd, "harvey");
+      const bradySession = getGameTimeSession(data, ymd, "brady");
+      
+      // Use the active session's endsAt (should be the same)
+      const activeSession = harveySession?.status === "active" ? harveySession : bradySession;
+      if (!activeSession || activeSession.status !== "active" || !activeSession.endsAt) return;
+      
+      const remainingMs = Math.max(0, activeSession.endsAt - Date.now());
+      const now = Date.now();
+      
+      let next = setGameTimeSession(data, ymd, "harvey", {
+        status: "paused",
+        remainingMs,
+        pausedAt: now,
+        endsAt: null,
+      });
+      
+      next = setGameTimeSession(next, ymd, "brady", {
+        status: "paused",
+        remainingMs,
+        pausedAt: now,
+        endsAt: null,
+      });
+      
+      patch(next);
+      
+      await blockKidsInternet(ctx, { sourceRef: `gametime:linked:pause:${ymd}` });
+      return;
+    }
+    
+    // Normal mode (not linked)
     const cur = getGameTimeSession(data, ymd, kidId);
     if (!cur || cur.status !== "active" || !cur.endsAt) return;
 
@@ -516,6 +671,64 @@ export default function ChoresModule({ ctx }) {
 
   const resumeGameTimeForKid = async (kidId) => {
     if (!kidId) return;
+    
+    const linkTime = !!data.settings?.linkGameTime;
+    
+    if (linkTime && (kidId === "harvey" || kidId === "brady")) {
+      // Resume both kids
+      const harveySession = getGameTimeSession(data, ymd, "harvey");
+      const bradySession = getGameTimeSession(data, ymd, "brady");
+      
+      // Use the paused session's remainingMs (should be the same)
+      const pausedSession = harveySession?.status === "paused" ? harveySession : bradySession;
+      if (!pausedSession || pausedSession.status !== "paused") return;
+      
+      const remainingMs = Number(pausedSession.remainingMs || 0) || 0;
+      if (remainingMs <= 0) {
+        let nextEnded = setGameTimeSession(data, ymd, "harvey", { status: "ended", remainingMs: 0 });
+        nextEnded = setGameTimeSession(nextEnded, ymd, "brady", { status: "ended", remainingMs: 0 });
+        patch(nextEnded);
+        await blockKidsInternet(ctx, { sourceRef: `gametime:linked:resume->end:${ymd}` });
+        return;
+      }
+      
+      const now = Date.now();
+      const endsAt = now + remainingMs;
+      
+      let next = setGameTimeSession(data, ymd, "harvey", {
+        status: "active",
+        endsAt,
+        remainingMs: null,
+        pausedAt: null,
+        blockedAt: null,
+      });
+      
+      next = setGameTimeSession(next, ymd, "brady", {
+        status: "active",
+        endsAt,
+        remainingMs: null,
+        pausedAt: null,
+        blockedAt: null,
+      });
+      
+      patch(next);
+      
+      const minutes = Math.ceil(remainingMs / 60000);
+      await allowKidsInternet(ctx, {
+        minutes,
+        kidId: "harvey",
+        sourceRef: `gametime:linked:resume:${ymd}:harvey:${minutes}`,
+      });
+      
+      await allowKidsInternet(ctx, {
+        minutes,
+        kidId: "brady",
+        sourceRef: `gametime:linked:resume:${ymd}:brady:${minutes}`,
+      });
+      return;
+    }
+    
+    // Normal mode (not linked)
     const cur = getGameTimeSession(data, ymd, kidId);
     if (!cur || cur.status !== "paused") return;
 
@@ -834,6 +1047,19 @@ export default function ChoresModule({ ctx }) {
           }}
         />
       ) : null}
+      
+      {showLinkConfirm ? (
+        <ConfirmCompleteModal
+          title="Confirm"
+          subtitle="You both agree to starting game time."
+          details="This will start a shared timer for Harvey and Brady."
+          onCancel={() => {
+            setShowLinkConfirm(false);
+            setLinkConfirmPerson(null);
+          }}
+          onConfirm={startLinkedGameTime}
+        />
+      ) : null}
     </div>
   );
 }
@@ -871,6 +1097,9 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
   );
   const [gameTimeBrady, setGameTimeBrady] = useState(
     Number(normalized.settings?.gameTimeMinutesOnDailyComplete?.Brady || 0) || 0
+  );
+  const [linkGameTime, setLinkGameTime] = useState(
+    !!normalized.settings?.linkGameTime
   );
 
   // Add helper task form (parent)
@@ -1061,6 +1290,7 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
           Harvey: Number(gameTimeHarvey || 0) || 0,
           Brady: Number(gameTimeBrady || 0) || 0,
         },
+        linkGameTime: !!linkGameTime,
       },
     });
   };
@@ -1364,6 +1594,22 @@ function ChoreModeOverlay({ ctx, data, patch, baseDate, onChildMarkDone }) {
                                 className="mt-2 w-full p-3 bg-white/10 border border-white/15 rounded-xl text-white"
                               />
                             </div>
+                          </div>
+                          <div className="rounded-2xl bg-white/5 border border-white/10 p-3">
+                            <label className="flex items-center gap-3 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={linkGameTime}
+                                onChange={(e) => setLinkGameTime(e.target.checked)}
+                                className="w-4 h-4"
+                              />
+                              <div className="flex-1">
+                                <div className="text-white/80 text-sm">Link time</div>
+                                <div className="text-white/50 text-xs mt-0.5">
+                                  Both kids must be eligible to start. Shared timer.
+                                </div>
+                              </div>
+                            </label>
                           </div>
                           <button
                             onClick={saveParentSettings}

@@ -44,6 +44,8 @@ export function defaultChoresData() {
         Harvey: 0,
         Brady: 0,
       },
+      // Link Harvey and Brady's game time (both must be eligible, shared timer)
+      linkGameTime: false,
     },
   };
 }
@@ -90,6 +92,8 @@ export function normalizeChoresData(raw) {
 
   const mergedPeople = Array.from(new Set([...PEOPLE_DEFAULTS, ...people])).filter(Boolean);
 
+  const linkGameTime = typeof settings.linkGameTime === "boolean" ? settings.linkGameTime : false;
+
   return {
     ...base,
     ...s,
@@ -116,6 +120,7 @@ export function normalizeChoresData(raw) {
       ...base.settings,
       ...settings,
       gameTimeMinutesOnDailyComplete: mergedGameTimeMinutes,
+      linkGameTime,
     },
   };
 }
